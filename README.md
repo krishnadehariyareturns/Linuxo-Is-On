@@ -3,14 +3,15 @@
 
 Discord but with a little more Linux
 
-![Monthly commits](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Krishnadehariyareturns/Linuxo-Is-On/main/stats/monthly-commits.json)
+<p align="center"> ![Monthly commits](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Krishnadehariyareturns/Linuxo-Is-On/main/stats/monthly-commits.json)
 
 [![Discord](https://img.shields.io/badge/Discord-%235865F2.svg?&logo=discord&logoColor=white)](#)
 
 ![Stars](https://img.shields.io/github/stars/Krishnadehariyareturns/Linuxo-Is-On?style=flat&color=2ea44f)
 ![Forks](https://img.shields.io/github/forks/Krishnadehariyareturns/Linuxo-Is-On?style=flat&color=gray)
 ![Issues](https://img.shields.io/github/issues/Krishnadehariyareturns/Linuxo-Is-On?style=flat&color=2ea44f)
-![Last Commit](https://img.shields.io/github/last-commit/Krishnadehariyareturns/Linuxo-Is-On?style=flat&color=gray)
+![Last Commit](https://img.shields.io/github/last-commit/Krishnadehariyareturns/Linuxo-Is-On?style=flat&color=gray) 
+</p>
 
 ![Commit activity](https://raw.githubusercontent.com/Krishnadehariyareturns/Linuxo-Is-On/main/stats/commit-activity.svg)
 
