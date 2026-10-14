@@ -1,0 +1,122 @@
+name: Update Commit Stats
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 0 * * 1"
+  push:
+    branches: [main]
+    paths-ignore:
+      - "stats/**"
+      - ".github/workflows/commit-stats.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate statistics
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          mkdir -p stats
+          python3 - <<'PY'
+          import os, json, urllib.request
+          from datetime import datetime, timezone
+          from collections import Counter
+          from xml.sax.saxutils import escape
+
+          repo = os.environ["REPO"]
+          token = os.environ["GH_TOKEN"]
+          now = datetime.now(timezone.utc)
+          url = f"https://api.github.com/repos/{repo}/commits?per_page=100"
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/vnd.github+json"
+          }
+
+          commits = []
+          for page in range(1, 11):
+              req = urllib.request.Request(
+                  url + f"&page={page}", headers=headers
+              )
+              with urllib.request.urlopen(req) as response:
+                  batch = json.load(response)
+              if not batch:
+                  break
+              commits.extend(batch)
+              if len(batch) < 100:
+                  break
+
+          counts = Counter()
+          for commit in commits:
+              date = commit["commit"]["author"]["date"]
+              month = date[:7]
+              if date[:4].isdigit():
+                  counts[month] += 1
+
+          current_month = now.strftime("%Y-%m")
+          monthly_count = counts[current_month]
+
+          with open("stats/monthly-commits.json", "w") as f:
+              json.dump({
+                  "schemaVersion": 1,
+                  "label": "commits this month",
+                  "message": str(monthly_count),
+                  "color": "2ea44f"
+              }, f)
+
+          months = []
+          year, month = now.year, now.month
+          for _ in range(12):
+              months.append(f"{year:04d}-{month:02d}")
+              month -= 1
+              if month == 0:
+                  month, year = 12, year - 1
+          months.reverse()
+
+          values = [counts[m] for m in months]
+          peak = max(values + [1])
+          bars = []
+          for i, (label, value) in enumerate(zip(months, values)):
+              x = 55 + i * 55
+              height = value / peak * 180
+              y = 220 - height
+              bars.append(
+                  f'<rect x="{x}" y="{y:.1f}" width="30" '
+                  f'height="{height:.1f}" rx="4" fill="#2ea44f"/>'
+                  f'<text x="{x+15}" y="245" text-anchor="middle" '
+                  f'font-size="10" fill="#888">{label[5:]}</text>'
+              )
+
+          svg = (
+              '<svg xmlns="http://www.w3.org/2000/svg" '
+              'width="740" height="280" viewBox="0 0 740 280">'
+              '<rect width="100%" height="100%" rx="12" fill="#0d1117"/>'
+              '<text x="25" y="30" font-size="17" '
+              'fill="#c9d1d9">Monthly commit activity</text>'
+              + "".join(bars) +
+              '</svg>'
+          )
+          with open("stats/commit-activity.svg", "w") as f:
+              f.write(svg)
+          PY
+
+      - name: Publish statistics
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add stats/
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update commit statistics"
+            git push
+          fi
