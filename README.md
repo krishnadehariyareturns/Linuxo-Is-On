@@ -1,6 +1,6 @@
 <h1 align="center">Linuxo</h1>
 
-Discord but with a little more Linux
+<p align="center">Discord but with a little more Linux</p>
 
 <p align="center">
   <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Krishnadehariyareturns/Linuxo-Is-On/main/stats/monthly-commits.json" alt="Monthly commits" />
