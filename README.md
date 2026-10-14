@@ -1,6 +1,10 @@
 # Linuxo
 
-Penguin/terminal-themed Discord bot starter.
+Discord but with a little more Linux
+
+![Monthly commits](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Krishnadehariyareturns/Linuxo-Is-On/main/stats/monthly-commits.json)
+
+![Commit activity](https://raw.githubusercontent.com/Krishnadehariyareturns/Linuxo-Is-On/main/stats/commit-activity.svg)
 
 ## Setup
 
