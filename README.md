@@ -1,4 +1,5 @@
-# Linuxo
+<p align="center"># Linuxo
+</p>
 
 Discord but with a little more Linux
 
