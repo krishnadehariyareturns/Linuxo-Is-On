@@ -4,6 +4,8 @@ Discord but with a little more Linux
 
 ![Monthly commits](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Krishnadehariyareturns/Linuxo-Is-On/main/stats/monthly-commits.json)
 
+[![Discord](https://img.shields.io/badge/Discord-%235865F2.svg?&logo=discord&logoColor=white)](#)
+
 ![Stars](https://img.shields.io/github/stars/Krishnadehariyareturns/Linuxo-Is-On?style=flat&color=2ea44f)
 ![Forks](https://img.shields.io/github/forks/Krishnadehariyareturns/Linuxo-Is-On?style=flat&color=gray)
 ![Issues](https://img.shields.io/github/issues/Krishnadehariyareturns/Linuxo-Is-On?style=flat&color=2ea44f)
