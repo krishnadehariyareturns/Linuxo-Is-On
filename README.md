@@ -1,6 +1,6 @@
 <div align="center">
   <img
-    src="assets/linuxo-text-logo.png"
+    src="Assets/linuxo-text-logo.png"
     alt="Linuxo logo"
     width="100%"
   />
