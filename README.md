@@ -1,4 +1,9 @@
-<h1 align="center">Linuxo</h1>
+<div align="center">
+  <img
+    src="assets/linuxo-text-logo.png"
+    alt="Linuxo logo"
+    width="100%"
+  />
 
 <p align="center">Discord but with a little more Linux</p>
 
