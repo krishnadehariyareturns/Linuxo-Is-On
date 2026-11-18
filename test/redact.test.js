@@ -88,12 +88,15 @@ test('scrubs secrets embedded in ordinary strings, URLs, Error.message, and Erro
         dbUrl: 'postgres://admin:myDbPass@db.internal:5432/app?token=querySecret123&mode=ro',
         keys: `k1=${apiKey} k2=${ghToken} k3=${ptlKey}`,
         inline: 'DISCORD_TOKEN=inlineSecretValue',
+        authToken: `Authorization: Token ${'t'.repeat(32)}`,
+        apiSecret: `API_SECRET=${'a'.repeat(32)}`,
+        awsSecret: `AWS_SECRET_ACCESS_KEY=${'w'.repeat(32)}`,
         rawErr: err,
         error: normalized,
     });
 
     const serialized = JSON.stringify(out);
-    for (const secret of [botTok, hookUrl, apiKey, ghToken, ptlKey, jwt, 'myDbPass', 'querySecret123', 'inlineSecretValue']) {
+    for (const secret of [botTok, hookUrl, apiKey, ghToken, ptlKey, jwt, 'myDbPass', 'querySecret123', 'inlineSecretValue', 't'.repeat(32), 'a'.repeat(32), 'w'.repeat(32)]) {
         assert.ok(!serialized.includes(secret), `expected "${secret.slice(0, 10)}..." to be scrubbed`);
     }
     assert.ok(out.dbUrl.includes('postgres://admin:[REDACTED]@db.internal:5432/app?token=[REDACTED]&mode=ro'));
