@@ -88,9 +88,11 @@ test('scrubs secrets embedded in ordinary strings, URLs, Error.message, and Erro
         dbUrl: 'postgres://admin:myDbPass@db.internal:5432/app?token=querySecret123&mode=ro',
         keys: `k1=${apiKey} k2=${ghToken} k3=${ptlKey}`,
         inline: 'DISCORD_TOKEN=inlineSecretValue',
-        authToken: `Authorization: Token ${'t'.repeat(32)}`,
-        apiSecret: `API_SECRET=${'a'.repeat(32)}`,
-        awsSecret: `AWS_SECRET_ACCESS_KEY=${'w'.repeat(32)}`,
+        freeformSecrets: [
+            `Authorization: Token ${'t'.repeat(32)}`,
+            `API_SECRET=${'a'.repeat(32)}`,
+            `AWS_SECRET_ACCESS_KEY=${'w'.repeat(32)}`,
+        ].join(' | '),
         rawErr: err,
         error: normalized,
     });
