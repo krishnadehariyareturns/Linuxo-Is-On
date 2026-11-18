@@ -71,7 +71,7 @@ const VALUE_SCRUBBERS = [
     },
     // Authorization schemes: Bearer / Basic / Bot <credential>
     {
-        pattern: /\b(Bearer|Basic)\s+(?!\[REDACTED\])[A-Za-z0-9._~+/=-]{8,}/gi,
+        pattern: /\b(Bearer|Basic|Token)\s+(?!\[REDACTED\])[A-Za-z0-9._~+/=-]{8,}/gi,
         replacement: `$1 ${REDACTED}`,
     },
     {
