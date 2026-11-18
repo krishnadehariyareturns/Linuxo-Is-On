@@ -40,8 +40,8 @@ const DEFAULT_MAX_STACK_LENGTH = 4096;
 // Error.message, Error.stack, URLs, and free-form log lines) BEFORE truncation.
 const VALUE_SCRUBBERS = [
     // Common personal identifiers embedded in otherwise free-form text.
-    { pattern: /\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b/gi, replacement: REDACTED },
-    { pattern: /\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b/g, replacement: REDACTED },
+    { pattern: /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, replacement: REDACTED },
+    { pattern: /\b(?:\d{1,3}\.){3}\d{1,3}\b/g, replacement: REDACTED },
     // PEM-encoded private keys
     {
         pattern: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
