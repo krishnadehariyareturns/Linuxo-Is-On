@@ -39,9 +39,6 @@ const DEFAULT_MAX_STACK_LENGTH = 4096;
 // Value-level secret scrubbers applied in order to every string (including
 // Error.message, Error.stack, URLs, and free-form log lines) BEFORE truncation.
 const VALUE_SCRUBBERS = [
-    // Common personal identifiers embedded in otherwise free-form text.
-    { pattern: /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, replacement: REDACTED },
-    { pattern: /\b(?:\d{1,3}\.){3}\d{1,3}\b/g, replacement: REDACTED },
     // PEM-encoded private keys
     {
         pattern: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
@@ -57,6 +54,9 @@ const VALUE_SCRUBBERS = [
         pattern: /\b([a-z][a-z0-9+.-]*:\/\/[^/\s:@"'<>]+):([^@\s/"'<>]+)@/gi,
         replacement: `$1:${REDACTED}@`,
     },
+    // Common personal identifiers embedded in otherwise free-form text.
+    { pattern: /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, replacement: REDACTED },
+    { pattern: /\b(?:\d{1,3}\.){3}\d{1,3}\b/g, replacement: REDACTED },
     // Sensitive URL query parameters (?token=..., &api_key=..., etc.)
     {
         pattern: /([?&](?:access_token|refresh_token|id_token|bot_token|auth_token|token|api_key|apikey|client_secret|secret_key|secret|password|passwd|auth)=)[^&#\s"'<>)\]]+/gi,
