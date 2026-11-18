@@ -34,34 +34,21 @@ function colorFor(record) {
     return COLOR_BY_LEVEL[record.level] ?? COLOR_BY_LEVEL.info;
 }
 
-/** Same field set/order as the old embed fields, just rendered as markdown lines. */
+/** Ordered metadata fields rendered as markdown lines inside a log container. */
 const FIELD_DEFS = [
-    ['command', 'Command', (v, r) => (r.subcommand ? `/${v} ${r.subcommand}` : `/${v}`)],
-    ['status', 'Status', (v) => v.toUpperCase()],
-    ['durationMs', 'Duration', (v) => fmtDuration(v)],
-    ['traceId', 'Trace ID', (v) => `\`${v}\``],
-    ['guildName', 'Guild', (v, r) => v || r.guildId],
-    ['userTag', 'User', (v, r) => v || r.userId],
-    ['handler', 'Handler', (v) => v],
-    ['customId', 'Component', (v) => v],
-    ['httpStatus', 'HTTP Status', (v) => v],
-    ['retryCount', 'Retries', (v) => v],
-    ['cacheStatus', 'Cache', (v) => v],
-    ['apiCalls', 'API calls', (v) => v],
-    ['suppressedCount', 'Repeated', (v) => `${v}x in the last window`],
-    ['buildId', 'Build', (v) => v],
-    ['deployId', 'Deploy', (v) => v],
+    ['Command', (r) => (r.command ? (r.subcommand ? `/${r.command} ${r.subcommand}` : `/${r.command}`) : undefined)],
+    ['Status', (r) => (r.status ? String(r.status).toUpperCase() : undefined)],
+    ['Duration', (r) => fmtDuration(r.durationMs)],
+    ['Guild', (r) => (r.guildName && r.guildId ? `${r.guildName} (${r.guildId})` : (r.guildName || r.guildId))],
+    ['User', (r) => r.userTag || r.userId],
+    ['Handler', (r) => r.handler],
+    ['Component', (r) => r.customId],
+    ['HTTP Status', (r) => r.httpStatus],
+    ['Retries', (r) => r.retryCount],
+    ['Cache', (r) => r.cacheStatus],
+    ['API calls', (r) => r.apiCalls],
+    ['Repeated', (r) => (r.suppressedCount !== undefined && r.suppressedCount !== null ? `${r.suppressedCount}x in the last window` : undefined)],
 ];
-
-/**
- * The footer block every log/report post ends with. This is the exact
- * snippet requested: a divider followed by the "how to investigate" hint,
- * with the actual trace id spliced into the prefix line above it (Discord
- * has no per-run template variables, so we build the string directly).
- */
-function investigateFooter() {
-    return (textDisplay) => textDisplay.setContent('-# For Cause/Fix/Why use prefix investigation traceid:');
-}
 
 /**
  * Build a Components v2 container for a fully-assembled log record
@@ -79,10 +66,8 @@ function buildLogComponent(record) {
     if (record.message) lines.push(truncate(record.message, TEXT_MAX - 200));
 
     const fieldLines = [];
-    for (const [key, label, format] of FIELD_DEFS) {
-        const raw = record[key];
-        if (raw === undefined || raw === null || raw === '') continue;
-        const value = format(raw, record);
+    for (const [label, extract] of FIELD_DEFS) {
+        const value = extract(record);
         if (value === undefined || value === null || value === '') continue;
         fieldLines.push(`**${label}:** ${value}`);
     }
@@ -93,8 +78,8 @@ function buildLogComponent(record) {
     }
 
     const footerBits = [
-        record.requestId ? `req:${String(record.requestId).slice(0, 8)}` : null,
         record.botVersion ? `v${record.botVersion}` : null,
+        record.timestamp || null,
     ].filter(Boolean).join(' · ');
 
     const container = new ContainerBuilder()
@@ -105,19 +90,6 @@ function buildLogComponent(record) {
         container
             .addSeparatorComponents((separator) => separator.setDivider(true).setSpacing(SeparatorSpacingSize.Small))
             .addTextDisplayComponents((textDisplay) => textDisplay.setContent(`-# ${truncate(footerBits, 256)}`));
-    }
-
-    // The mandated investigation hint — always the last thing in the container,
-    // on every log/report post, right after a divider.
-    if (record.traceId) {
-        container
-            .addSeparatorComponents((separator) => separator.setDivider(true))
-            .addTextDisplayComponents((textDisplay) => textDisplay
-                .setContent(`-# For Cause/Fix/Why use prefix \`/investigate traceid:${record.traceId}\``));
-    } else {
-        container
-            .addSeparatorComponents((separator) => separator.setDivider(true))
-            .addTextDisplayComponents(investigateFooter());
     }
 
     return container;

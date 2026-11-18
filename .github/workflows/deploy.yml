@@ -39,6 +39,7 @@ jobs:
             --exclude='node_modules/' \
             --exclude='.env' \
             --exclude='*.log' \
+            --exclude='*.zip' \
             --exclude='test/' \
             --exclude='deploy/'
 

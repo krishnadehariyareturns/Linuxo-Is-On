@@ -18,9 +18,10 @@ function envBool(value, fallback) {
     return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
 }
 
-function envInt(value, fallback) {
+function envInt(value, fallback, { min = 0 } = {}) {
     const n = parseInt(value, 10);
-    return Number.isFinite(n) ? n : fallback;
+    if (!Number.isFinite(n) || n < min) return fallback;
+    return n;
 }
 
 /**
@@ -49,15 +50,15 @@ function loadConfig(overrides = {}) {
 
         webhook: {
             enabled: envBool(env.LOG_WEBHOOK_ENABLED, true),
-            batchSize: envInt(env.LOG_WEBHOOK_BATCH_SIZE, 10),
-            flushIntervalMs: envInt(env.LOG_WEBHOOK_FLUSH_MS, 1000),
-            retryLimit: envInt(env.LOG_WEBHOOK_RETRY_LIMIT, 5),
-            retryBaseMs: envInt(env.LOG_WEBHOOK_RETRY_BASE_MS, 500),
-            retryCapMs: envInt(env.LOG_WEBHOOK_RETRY_CAP_MS, 30_000),
-            maxQueueSize: envInt(env.LOG_WEBHOOK_MAX_QUEUE, 500),
-            highWaterMark: envInt(env.LOG_WEBHOOK_HIGH_WATER, 200),
-            circuitBreakerThreshold: envInt(env.LOG_WEBHOOK_CIRCUIT_THRESHOLD, 5),
-            circuitBreakerCooldownMs: envInt(env.LOG_WEBHOOK_CIRCUIT_COOLDOWN_MS, 30_000),
+            batchSize: envInt(env.LOG_WEBHOOK_BATCH_SIZE, 10, { min: 1 }),
+            flushIntervalMs: envInt(env.LOG_WEBHOOK_FLUSH_MS, 1000, { min: 0 }),
+            retryLimit: envInt(env.LOG_WEBHOOK_RETRY_LIMIT, 5, { min: 0 }),
+            retryBaseMs: envInt(env.LOG_WEBHOOK_RETRY_BASE_MS, 500, { min: 1 }),
+            retryCapMs: envInt(env.LOG_WEBHOOK_RETRY_CAP_MS, 30_000, { min: 1 }),
+            maxQueueSize: envInt(env.LOG_WEBHOOK_MAX_QUEUE, 500, { min: 1 }),
+            highWaterMark: envInt(env.LOG_WEBHOOK_HIGH_WATER, 200, { min: 1 }),
+            circuitBreakerThreshold: envInt(env.LOG_WEBHOOK_CIRCUIT_THRESHOLD, 5, { min: 1 }),
+            circuitBreakerCooldownMs: envInt(env.LOG_WEBHOOK_CIRCUIT_COOLDOWN_MS, 30_000, { min: 1 }),
             categories: {
                 logs: env.LOG_WEBHOOK_LOGS || '',
                 errors: env.LOG_WEBHOOK_ERRORS || '',
@@ -76,12 +77,12 @@ function loadConfig(overrides = {}) {
         },
 
         performance: {
-            slowCommandMs: envInt(env.LOG_SLOW_COMMAND_MS, 1000),
-            warnCommandMs: envInt(env.LOG_WARN_COMMAND_MS, 500),
+            slowCommandMs: envInt(env.LOG_SLOW_COMMAND_MS, 1000, { min: 1 }),
+            warnCommandMs: envInt(env.LOG_WARN_COMMAND_MS, 500, { min: 1 }),
             includeMemory: envBool(env.LOG_INCLUDE_MEMORY, true),
-            memorySampleIntervalMs: envInt(env.LOG_MEMORY_SAMPLE_MS, 5 * 60_000),
+            memorySampleIntervalMs: envInt(env.LOG_MEMORY_SAMPLE_MS, 5 * 60_000, { min: 1000 }),
             // 0 disables the periodic rollup summary.
-            summaryIntervalMs: envInt(env.LOG_SUMMARY_INTERVAL_MS, 0),
+            summaryIntervalMs: envInt(env.LOG_SUMMARY_INTERVAL_MS, 0, { min: 0 }),
             // Per-command overrides, e.g. { backup: { warnMs: 5000, slowMs: 15000 } }
             perCommandThresholds: {},
         },
@@ -89,27 +90,17 @@ function loadConfig(overrides = {}) {
         redaction: {
             enabled: envBool(env.LOG_REDACTION_ENABLED, true),
             extraKeys: [],
-            maxStringLength: envInt(env.LOG_MAX_STRING_LENGTH, 500),
+            maxStringLength: envInt(env.LOG_MAX_STRING_LENGTH, 500, { min: 0 }),
+            maxStackLength: envInt(env.LOG_MAX_STACK_LENGTH, 4096, { min: 0 }),
         },
 
         dedup: {
-            windowMs: envInt(env.LOG_DEDUP_WINDOW_MS, 60_000),
+            windowMs: envInt(env.LOG_DEDUP_WINDOW_MS, 60_000, { min: 0 }),
+            maxEntries: envInt(env.LOG_DEDUP_MAX_ENTRIES, 1000, { min: 1 }),
         },
 
-        statsWindowSize: envInt(env.LOG_STATS_WINDOW_SIZE, 500),
-
-        // ---- forensics / investigation ----
-        forensics: {
-            // How many recent records the in-memory investigation index keeps
-            // (across all traces/commands). Bounded ring buffer — oldest falls off.
-            maxRecords: envInt(env.LOG_FORENSICS_MAX_RECORDS, 5000),
-        },
-
-        ai: {
-            openrouterApiKey: env.OPENROUTER_API_KEY || '',
-            model: env.OPENROUTER_MODEL || 'openrouter/free',
-            referer: env.OPENROUTER_REFERER || '',
-        },
+        statsWindowSize: envInt(env.LOG_STATS_WINDOW_SIZE, 500, { min: 1 }),
+        statsMaxCommands: envInt(env.LOG_STATS_MAX_COMMANDS, 200, { min: 1 }),
     };
 
     return deepMerge(defaults, overrides);

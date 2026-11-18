@@ -2,6 +2,8 @@
 
 const { SECURITY_EVENTS, PERFORMANCE_EVENTS } = require('./eventNames');
 const { isEnabled } = require('./levels');
+const { isRetryable, extractHttpStatus } = require('./errors');
+const { scrubString } = require('./redact');
 
 const CATEGORIES = ['logs', 'errors', 'security', 'performance', 'debug'];
 
@@ -17,15 +19,11 @@ const FALLBACK_CHAIN = {
     logs: ['logs'],
 };
 
-// Discord allows up to 40 total components per Components v2 message, but each
-// log container here nests ~4-6 sub-components (text + separators + footer),
-// so batching 5 containers per message stays safely under that ceiling.
+// Discord allows up to 40 total components per Components v2 message, and each
+// log container nests up to 3 sub-components, so 5 containers stays safely under.
 const DISCORD_COMPONENTS_PER_MESSAGE = 5;
 
-// Discord's IS_COMPONENTS_V2 message flag (1 << 15 = 32768). Hardcoded here
-// (rather than requiring discord.js just for this constant) so this module
-// stays fully unit-testable with a fake sendFn and no discord.js install —
-// same reasoning as the rest of this file's discord.js-free design.
+// Discord's IS_COMPONENTS_V2 message flag (1 << 15 = 32768).
 const IS_COMPONENTS_V2 = 1 << 15;
 
 function categoryFor(record) {
@@ -57,21 +55,46 @@ function backoffDelay(attempt, { retryBaseMs, retryCapMs }) {
 
 /**
  * Defensive extraction of a Discord-provided retry_after (ms), if present.
- * Keyed off *which* field matched rather than guessed from magnitude:
  * `.retryAfter` is @discordjs/rest's own convenience field and is already
  * milliseconds; `retry_after` (snake_case, possibly nested under a raw
- * error body) is Discord's raw API field and is always in seconds per
- * Discord's own API docs.
+ * error body) is Discord's raw API field and is always in seconds.
  */
 function extractRetryAfterMs(err) {
-    if (typeof err?.retryAfter === 'number' && Number.isFinite(err.retryAfter)) {
+    if (typeof err?.retryAfter === 'number' && Number.isFinite(err.retryAfter) && err.retryAfter >= 0) {
         return err.retryAfter;
     }
     const secondsCandidates = [err?.retry_after, err?.rawError?.retry_after, err?.data?.retry_after];
     for (const c of secondsCandidates) {
-        if (typeof c === 'number' && Number.isFinite(c)) return Math.round(c * 1000);
+        if (typeof c === 'number' && Number.isFinite(c) && c >= 0) return Math.round(c * 1000);
     }
     return null;
+}
+
+/**
+ * Classify whether a failed webhook send should be retried.
+ * Retries explicit rate-limit responses (retryAfter/retry_after), retryable HTTP
+ * statuses (408, 425, 429, 5xx), and transient network/socket/timeout failures.
+ * Fails fast on permanent 4xx client errors (400, 401, 403, 404, etc.) and
+ * non-transient errors.
+ */
+function shouldRetryDelivery(err) {
+    const httpStatus = extractHttpStatus(err);
+    const retryAfterMs = extractRetryAfterMs(err);
+    if (retryAfterMs !== null) {
+        // Explicit rate-limit hint is retryable unless paired with a non-429 permanent 4xx.
+        if (httpStatus === undefined || httpStatus === 429 || isRetryable(err, httpStatus)) {
+            return { retryable: true, httpStatus, retryAfterMs };
+        }
+    }
+    return {
+        retryable: isRetryable(err, httpStatus),
+        httpStatus,
+        retryAfterMs: null,
+    };
+}
+
+function safeErrorMessage(err) {
+    return err?.message ? scrubString(String(err.message)) : 'unknown error';
 }
 
 function chunk(arr, size) {
@@ -82,12 +105,11 @@ function chunk(arr, size) {
 
 /**
  * Default production sendFn: lazily creates one discord.js WebhookClient per
- * configured category and posts Components v2 containers through it. Only required at the
- * point of actually sending, so this file has no top-level dependency on
- * discord.js and can be fully unit-tested with a fake sendFn.
+ * configured category and posts Components v2 containers through it.
  */
-function createDefaultSendFn(config) {
+function createDefaultSender(config) {
     const clients = new Map();
+
     function clientFor(category) {
         if (clients.has(category)) return clients.get(category);
         const url = config.webhook.categories[category];
@@ -98,22 +120,37 @@ function createDefaultSendFn(config) {
         clients.set(category, client);
         return client;
     }
-    return async function send(category, payload) {
+
+    async function send(category, payload) {
         const client = clientFor(category);
         if (!client) throw new Error(`No webhook URL configured for category "${category}"`);
         await client.send(payload);
-    };
+    }
+
+    function destroy() {
+        for (const client of clients.values()) {
+            try {
+                client.destroy?.();
+            } catch {
+                /* ignore cleanup error */
+            }
+        }
+        clients.clear();
+    }
+
+    return { send, destroy };
 }
 
 /**
  * @param {object} opts
  * @param {object} opts.config - full logger config (see config.js)
  * @param {function} [opts.sendFn] - async (category, {components, flags}) => void. Defaults to a real discord.js WebhookClient sender. Inject a fake for tests.
- * @param {function} [opts.onInternalLog] - (level, message, data) => void. Called for the transport's OWN lifecycle events (retries, circuit state, backpressure) — console-only, never re-enters the webhook queue.
- * @param {function} [opts.onDeliveryFailure] - (category, records) => void. Called when a batch exhausts all retries, so the caller can dump it to console/file as a fallback.
+ * @param {function} [opts.onInternalLog] - (level, message, data) => void. Console-only transport diagnostics.
+ * @param {function} [opts.onDeliveryFailure] - (category, records) => void. Called when delivery permanently fails or exhausts retries.
  */
 function createWebhookTransport({ config, sendFn, onInternalLog, onDeliveryFailure } = {}) {
-    const send = sendFn || createDefaultSendFn(config);
+    const defaultSender = sendFn ? null : createDefaultSender(config);
+    const send = sendFn || defaultSender.send;
     const log = onInternalLog || (() => {});
     const deliveryFailure = onDeliveryFailure || (() => {});
 
@@ -133,7 +170,7 @@ function createWebhookTransport({ config, sendFn, onInternalLog, onDeliveryFailu
         return state[cat].circuitOpenUntil > Date.now();
     }
 
-    /** Route one record (+ its prebuilt Components v2 container) into the right category's queue, if it clears that category's min level and a webhook URL is actually configured for it (after fallback). */
+    /** Route one record (+ its prebuilt Components v2 container) into the right category's queue. */
     function route(record, component) {
         if (!config.webhook.enabled) return null;
         const category = resolveCategory(record, config);
@@ -174,14 +211,19 @@ function createWebhookTransport({ config, sendFn, onInternalLog, onDeliveryFailu
         }
     }
 
-    /** Attempt delivery of one chunk (<=10 top-level components) with retry+backoff. Resolves {ok:boolean}. */
+    /**
+     * Attempt delivery of one chunk with transient-only retry + backoff.
+     * Permanent 4xx and non-retryable failures fail fast without retrying or
+     * tripping the transient-outage circuit breaker.
+     */
     async function sendChunkWithRetry(category, jobs) {
         const s = state[category];
-        const maxAttempts = config.webhook.retryLimit;
+        const maxRetries = config.webhook.retryLimit;
         let attempt = 0;
 
-        while (attempt <= maxAttempts) {
+        while (attempt <= maxRetries) {
             try {
+                // eslint-disable-next-line no-await-in-loop
                 await send(category, { components: jobs.map((j) => j.component), flags: IS_COMPONENTS_V2 });
                 s.consecutiveFailures = 0;
                 if (s.circuitOpenUntil) {
@@ -191,18 +233,33 @@ function createWebhookTransport({ config, sendFn, onInternalLog, onDeliveryFailu
                 log('debug', `delivered ${jobs.length} record(s) to "${category}"`, { category, count: jobs.length });
                 return { ok: true };
             } catch (err) {
+                const { retryable, httpStatus, retryAfterMs } = shouldRetryDelivery(err);
+                const errMessage = safeErrorMessage(err);
+
+                if (!retryable) {
+                    log('error', `webhook send to "${category}" failed with permanent/non-retryable error; not retrying`, {
+                        category,
+                        httpStatus,
+                        code: err?.code,
+                        error: errMessage,
+                    });
+                    deliveryFailure(category, jobs.map((j) => j.record));
+                    return { ok: false, permanent: true };
+                }
+
                 attempt++;
-                const isLast = attempt > maxAttempts;
+                const isLast = attempt > maxRetries;
                 if (!isLast) {
-                    const retryAfter = extractRetryAfterMs(err);
-                    const delay = retryAfter ?? backoffDelay(attempt, config.webhook);
-                    log('warn', `webhook send to "${category}" failed, retrying`, {
+                    const delay = retryAfterMs ?? backoffDelay(attempt, config.webhook);
+                    log('warn', `webhook send to "${category}" failed transiently, retrying`, {
                         category,
                         attempt,
-                        maxAttempts,
+                        maxAttempts: maxRetries,
                         delayMs: delay,
-                        rateLimited: retryAfter !== null,
-                        error: err?.message,
+                        httpStatus,
+                        code: err?.code,
+                        rateLimited: retryAfterMs !== null || httpStatus === 429,
+                        error: errMessage,
                     });
                     // eslint-disable-next-line no-await-in-loop
                     await sleep(delay);
@@ -210,36 +267,37 @@ function createWebhookTransport({ config, sendFn, onInternalLog, onDeliveryFailu
                 }
 
                 s.consecutiveFailures++;
-                log('error', `webhook send to "${category}" failed after ${maxAttempts} retries`, {
+                log('error', `webhook send to "${category}" failed after ${maxRetries} retries`, {
                     category,
-                    error: err?.message,
+                    httpStatus,
+                    code: err?.code,
+                    error: errMessage,
                     consecutiveFailures: s.consecutiveFailures,
                 });
 
                 if (s.consecutiveFailures >= config.webhook.circuitBreakerThreshold && !isCircuitOpen(category)) {
                     s.circuitOpenUntil = Date.now() + config.webhook.circuitBreakerCooldownMs;
-                    log('error', `webhook circuit opened for "${category}" after repeated failures`, {
+                    log('error', `webhook circuit opened for "${category}" after repeated transient failures`, {
                         category,
                         cooldownMs: config.webhook.circuitBreakerCooldownMs,
                     });
                 }
 
                 deliveryFailure(category, jobs.map((j) => j.record));
-                return { ok: false };
+                return { ok: false, permanent: false };
             }
         }
-        return { ok: false };
+        return { ok: false, permanent: false };
     }
 
-    /** Flush one category: pull up to batchSize jobs, split into <=10-embed chunks (Discord's hard limit), send each. `force` bypasses the batch-size/interval gating (used at shutdown). */
+    const inFlight = new Set();
+
+    /** Flush one category. `force` bypasses the batch-size/interval/circuit gating (used at shutdown). */
     async function flush(category, { force = false } = {}) {
         const s = state[category];
         if (!s.queue.length) return;
         if (isCircuitOpen(category) && !force) return;
 
-        // "Due by time" is based on how long the OLDEST queued item has been
-        // waiting, not on when we last flushed — that way a freshly-arrived
-        // item after a long idle period isn't treated as instantly overdue.
         const oldestAge = Date.now() - s.queue[0].addedAt;
         const dueByTime = oldestAge >= config.webhook.flushIntervalMs;
         const dueBySize = s.queue.length >= config.webhook.batchSize;
@@ -248,9 +306,17 @@ function createWebhookTransport({ config, sendFn, onInternalLog, onDeliveryFailu
         const takeCount = force ? s.queue.length : config.webhook.batchSize;
         const batch = s.queue.splice(0, takeCount);
 
-        for (const jobs of chunk(batch, DISCORD_COMPONENTS_PER_MESSAGE)) {
-            // eslint-disable-next-line no-await-in-loop
-            await sendChunkWithRetry(category, jobs);
+        const task = (async () => {
+            for (const jobs of chunk(batch, DISCORD_COMPONENTS_PER_MESSAGE)) {
+                // eslint-disable-next-line no-await-in-loop
+                await sendChunkWithRetry(category, jobs);
+            }
+        })();
+        inFlight.add(task);
+        try {
+            await task;
+        } finally {
+            inFlight.delete(task);
         }
     }
 
@@ -259,11 +325,29 @@ function createWebhookTransport({ config, sendFn, onInternalLog, onDeliveryFailu
         await Promise.all(CATEGORIES.map((cat) => flush(cat)));
     }
 
-    /** Best-effort drain of everything queued, bounded by timeoutMs — used at graceful shutdown so in-flight logs aren't silently lost. */
+    /** Best-effort drain of everything queued and in-flight, bounded by timeoutMs. */
     async function flushAll({ timeoutMs = 5000 } = {}) {
-        const work = Promise.all(CATEGORIES.map((cat) => flush(cat, { force: true })));
-        const timeout = sleep(timeoutMs).then(() => 'timeout');
-        return Promise.race([work.then(() => 'done'), timeout]);
+        let timer = null;
+        const timeout = new Promise((resolve) => {
+            timer = setTimeout(() => resolve('timeout'), timeoutMs);
+            timer.unref?.();
+        });
+        const drain = (async () => {
+            await Promise.all(CATEGORIES.map((cat) => flush(cat, { force: true })));
+            if (inFlight.size > 0) {
+                await Promise.allSettled([...inFlight]);
+            }
+            return 'done';
+        })();
+        try {
+            return await Promise.race([drain, timeout]);
+        } finally {
+            if (timer) clearTimeout(timer);
+        }
+    }
+
+    function destroy() {
+        defaultSender?.destroy();
     }
 
     function getStats() {
@@ -281,7 +365,15 @@ function createWebhookTransport({ config, sendFn, onInternalLog, onDeliveryFailu
         return out;
     }
 
-    return { route, tick, flush, flushAll, getStats, CATEGORIES };
+    return { route, tick, flush, flushAll, destroy, getStats, CATEGORIES };
 }
 
-module.exports = { createWebhookTransport, categoryFor, resolveCategory, backoffDelay, extractRetryAfterMs, CATEGORIES };
+module.exports = {
+    createWebhookTransport,
+    categoryFor,
+    resolveCategory,
+    backoffDelay,
+    extractRetryAfterMs,
+    shouldRetryDelivery,
+    CATEGORIES,
+};

@@ -2,7 +2,7 @@
 
 const crypto = require('node:crypto');
 
-// HTTP/network codes that are generally safe to retry.
+// HTTP/network codes that are safe to retry (transient failures & rate limits).
 const RETRYABLE_HTTP = new Set([408, 425, 429, 500, 502, 503, 504]);
 const RETRYABLE_SYSTEM_CODES = new Set([
     'ECONNRESET',
@@ -10,11 +10,38 @@ const RETRYABLE_SYSTEM_CODES = new Set([
     'ETIMEDOUT',
     'EAI_AGAIN',
     'EPIPE',
+    'ENOTFOUND',
+    'EHOSTUNREACH',
+    'ENETUNREACH',
+    'ECONNABORTED',
+    'UND_ERR_CONNECT_TIMEOUT',
+    'UND_ERR_HEADERS_TIMEOUT',
+    'UND_ERR_BODY_TIMEOUT',
+    'UND_ERR_SOCKET',
 ]);
 
+function extractHttpStatus(err) {
+    const raw = err?.status ?? err?.httpStatus ?? err?.statusCode ?? err?.rawError?.status;
+    return typeof raw === 'number' && Number.isFinite(raw) ? raw : undefined;
+}
+
+function isPermanentHttpStatus(httpStatus) {
+    return typeof httpStatus === 'number'
+        && httpStatus >= 400
+        && httpStatus < 500
+        && !RETRYABLE_HTTP.has(httpStatus);
+}
+
 function isRetryable(err, httpStatus) {
-    if (httpStatus && RETRYABLE_HTTP.has(httpStatus)) return true;
-    if (err && RETRYABLE_SYSTEM_CODES.has(err.code)) return true;
+    const status = httpStatus ?? extractHttpStatus(err);
+    if (typeof status === 'number') {
+        return RETRYABLE_HTTP.has(status);
+    }
+    if (!err) return false;
+    if (err.code && RETRYABLE_SYSTEM_CODES.has(err.code)) return true;
+    if (err.cause?.code && RETRYABLE_SYSTEM_CODES.has(err.cause.code)) return true;
+    if (err.name === 'AbortError' || err.name === 'TimeoutError') return true;
+    if (err.name === 'TypeError' && /\b(fetch failed|network)\b/i.test(String(err.message || ''))) return true;
     return false;
 }
 
@@ -28,7 +55,6 @@ function normalizeError(err) {
     if (err === null || err === undefined) return null;
 
     if (!(err instanceof Error)) {
-        // Someone threw a string/object/whatever. Don't crash — wrap it.
         return {
             name: 'NonErrorThrown',
             message: typeof err === 'string' ? err : safeStringify(err),
@@ -39,11 +65,7 @@ function normalizeError(err) {
         };
     }
 
-    // discord.js v14 DiscordAPIError exposes `.code` (Discord's numeric API
-    // error code) and `.status` (HTTP status). Older/other error shapes may
-    // use `.httpStatus` or nest details under `.rawError`. Check the common
-    // spots without assuming any one library is in play.
-    const httpStatus = err.status ?? err.httpStatus ?? err.rawError?.status ?? undefined;
+    const httpStatus = extractHttpStatus(err);
     const code = err.code ?? err.rawError?.code ?? undefined;
 
     return {
@@ -88,20 +110,30 @@ function firstStackFrame(stack) {
 }
 
 /**
- * A short stable hash used to group repeats of "the same" failure for
- * deduplication. Deliberately coarse — same error class + code + command +
- * originating source line, ignoring the specific message text (which can
- * contain variable data like an ID that would otherwise fragment the group).
+ * A short stable hash used to group repeats of the same failure for webhook
+ * deduplication. Includes `guildId` so an error in one guild never suppresses
+ * error alerts originating from a different guild.
  */
 function fingerprint(normalized, context = {}) {
     if (!normalized) return 'unknown';
     const basis = [
+        context.guildId ?? '',
         normalized.name,
         normalized.code ?? '',
-        context.command ?? context.event ?? '',
+        context.command ?? context.customId ?? context.event ?? '',
         firstStackFrame(normalized.stack),
     ].join('|');
     return crypto.createHash('sha1').update(basis).digest('hex').slice(0, 10);
 }
 
-module.exports = { normalizeError, safeSummary, fingerprint, isRetryable, firstStackFrame };
+module.exports = {
+    normalizeError,
+    safeSummary,
+    fingerprint,
+    isRetryable,
+    isPermanentHttpStatus,
+    extractHttpStatus,
+    firstStackFrame,
+    RETRYABLE_HTTP,
+    RETRYABLE_SYSTEM_CODES,
+};

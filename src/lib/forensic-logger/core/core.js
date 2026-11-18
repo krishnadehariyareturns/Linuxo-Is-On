@@ -7,15 +7,14 @@ const { monitorEventLoopDelay } = require('node:perf_hooks');
 const { loadConfig, thresholdsFor } = require('./config');
 const { isEnabled, colorize, DIM, BOLD, RESET } = require('./levels');
 const { Events } = require('./eventNames');
-const { createContext, childContext, fromInteraction, initStaticFields } = require('./context');
+const { createContextFactory } = require('./context');
 const { startTimer, elapsedMs } = require('./timer');
-const { redact } = require('./redact');
+const { redact, scrubString } = require('./redact');
 const { normalizeError, safeSummary, fingerprint } = require('./errors');
 const { CommandStats, ErrorDedup } = require('./stats');
 const { renderBoxReport } = require('./reportBox');
 const { buildLogComponent } = require('./components');
 const { createWebhookTransport } = require('./webhookTransport');
-const { ForensicsStore } = require('./forensics');
 const {
     buildStartupReport: buildStartupReportRaw,
     buildShutdownReport: buildShutdownReportRaw,
@@ -23,7 +22,14 @@ const {
     fmtDuration,
 } = require('./diagnostics');
 
-const BOX_EVENTS = new Set([Events.COMMAND_START, Events.COMMAND_END, Events.COMMAND_ERROR, Events.BUTTON_START, Events.BUTTON_END, Events.BUTTON_ERROR]);
+const BOX_EVENTS = new Set([
+    Events.COMMAND_START,
+    Events.COMMAND_END,
+    Events.COMMAND_ERROR,
+    Events.BUTTON_START,
+    Events.BUTTON_END,
+    Events.BUTTON_ERROR,
+]);
 
 function defaultHandlerName(name) {
     const clean = String(name).replace(/[^a-zA-Z0-9]/g, '');
@@ -57,7 +63,7 @@ function humanizeMessage(event, context, { status, error } = {}) {
 
 function compactContext(record) {
     const bits = [];
-    for (const k of ['guildId', 'channelId', 'userId', 'traceId']) {
+    for (const k of ['guildId', 'channelId', 'userId']) {
         if (record[k] !== undefined) bits.push(`${k}=${record[k]}`);
     }
     return bits.join(' ');
@@ -65,54 +71,106 @@ function compactContext(record) {
 
 /**
  * A 3rd positional argument that's an Error is treated as {error: that}, so
- * `logger.error('COMMAND_ERROR', ctx, err)` works exactly as shown in the
- * design doc, while `logger.error('COMMAND_ERROR', ctx, {error, extra})`
- * still works for callers who want more control.
+ * `logger.error('COMMAND_ERROR', ctx, err)` and
+ * `logger.error('COMMAND_ERROR', ctx, {error, extra})` both work cleanly.
  */
 function normalizeCallArgs(maybeOptions) {
     if (maybeOptions instanceof Error) return { error: maybeOptions };
     return maybeOptions || {};
 }
 
+function closeWriteStream(stream, timeoutMs = 3000) {
+    if (!stream || stream.destroyed || stream.writableEnded) {
+        return Promise.resolve();
+    }
+
+    return new Promise((resolve) => {
+        let settled = false;
+        let timer = null;
+
+        const done = () => {
+            if (settled) return;
+            settled = true;
+            if (timer) clearTimeout(timer);
+            stream.removeListener('finish', onFinish);
+            stream.removeListener('close', done);
+            stream.removeListener('error', done);
+            resolve();
+        };
+
+        const onFinish = () => {
+            // Once all buffered data is flushed ('finish'), wait briefly for 'close'
+            // if autoClose is active, or resolve right away if already closed.
+            if (stream.closed || stream.destroyed) {
+                done();
+            }
+        };
+
+        timer = setTimeout(done, Math.max(50, timeoutMs));
+        timer.unref?.();
+
+        stream.once('finish', onFinish);
+        stream.once('close', done);
+        stream.once('error', done);
+
+        try {
+            stream.end();
+        } catch {
+            done();
+        }
+    });
+}
+
 /**
  * @param {object} overrides - config overrides, deep-merged over the env-var
- *   defaults (see config.js). `overrides.shardId` sets the static shardId
- *   field. `overrides.sendFn` and `overrides.buildComponentFn` are a test-only
- *   escape hatch — injecting fakes for both makes the whole pipeline,
- *   including routing and error dedup, unit-testable without discord.js or
- *   network access. Real usage never needs to pass either; discord.js-backed
- *   defaults are used automatically. `overrides.buildInfo` seeds the
- *   forensics build/deploy-change context (e.g. { buildId, deployId, gitSha }).
+ *   defaults (see config.js). `overrides.shardId` sets the instance-scoped
+ *   static shardId field. `overrides.sendFn` and `overrides.buildComponentFn`
+ *   are test seams allowing full pipeline testing without discord.js or network.
  */
 function createLogger(overrides = {}) {
-    const { sendFn, buildComponentFn, buildInfo, forensics: forensicsOverrides, ...configOverrides } = overrides;
+    const { sendFn, buildComponentFn, shardId = 0, ...configOverrides } = overrides;
     const buildComponentImpl = buildComponentFn || buildLogComponent;
     const config = loadConfig(configOverrides);
-    initStaticFields({ botVersion: config.botVersion, shardId: overrides.shardId ?? 0 });
 
-    const stats = new CommandStats({ windowSize: config.statsWindowSize });
-    const dedup = new ErrorDedup({ windowMs: config.dedup.windowMs });
-    const forensics = new ForensicsStore({
-        maxRecords: config.forensics?.maxRecords ?? 5000,
-        buildInfo: { botVersion: config.botVersion, nodeVersion: process.version, ...buildInfo },
-        ...forensicsOverrides,
+    // Instance-scoped context factory — multiple loggers never share static state.
+    const ctxFactory = createContextFactory({ botVersion: config.botVersion, shardId });
+
+    const stats = new CommandStats({
+        windowSize: config.statsWindowSize,
+        maxCommands: config.statsMaxCommands,
+    });
+    const dedup = new ErrorDedup({
+        windowMs: config.dedup.windowMs,
+        maxEntries: config.dedup.maxEntries,
     });
     const healthChecks = [];
     const contextByInteraction = new WeakMap();
 
     let fileStream = null;
+    let fileStreamClosing = false;
+    let closePromise = null;
+
     if (config.file) {
         try {
-            fileStream = fs.createWriteStream(path.resolve(config.file), { flags: 'a' });
-            fileStream.on('error', (err) => consoleWrite('warn', `log file write error: ${err.message}`));
+            const resolvedFile = path.resolve(config.file);
+            fs.mkdirSync(path.dirname(resolvedFile), { recursive: true });
+            fileStream = fs.createWriteStream(resolvedFile, { flags: 'a', autoClose: true });
+            fileStream.on('error', (err) => consoleWrite('warn', `log file write error: ${scrubString(err.message)}`));
         } catch (err) {
-            consoleWrite('warn', `failed to open log file "${config.file}": ${err.message}`);
+            consoleWrite('warn', `failed to open log file "${config.file}": ${scrubString(err.message)}`);
         }
+    }
+
+    function writeToFile(line) {
+        if (!fileStream || fileStreamClosing || fileStream.destroyed || fileStream.writableEnded) return;
+        fileStream.write(`${line}\n`);
     }
 
     function consoleWrite(level, message, data) {
         if (!config.console) return;
-        const line = `${colorize(level, `[${level.toUpperCase()}]`)} ${DIM}(logger)${RESET} ${message}${data ? ` ${JSON.stringify(data)}` : ''}`;
+        const safeMsg = config.redaction.enabled ? scrubString(String(message)) : String(message);
+        const safeData = data && config.redaction.enabled ? redact(data, config.redaction) : data;
+        const line = `${colorize(level, `[${level.toUpperCase()}]`)} ${DIM}(logger)${RESET} ${safeMsg}${safeData ? ` ${JSON.stringify(safeData)}` : ''}`;
         (level === 'error' || level === 'fatal' ? console.error : console.log)(line);
     }
 
@@ -121,7 +179,7 @@ function createLogger(overrides = {}) {
         sendFn,
         onInternalLog: (level, message, data) => consoleWrite(level, message, data),
         onDeliveryFailure: (category, records) => {
-            consoleWrite('error', `webhook delivery to "${category}" exhausted retries — falling back to console/file for ${records.length} record(s)`);
+            consoleWrite('error', `webhook delivery to "${category}" failed — falling back to console/file for ${records.length} record(s)`);
             for (const r of records) writeJsonLine(r);
         },
     });
@@ -130,7 +188,7 @@ function createLogger(overrides = {}) {
     function writeJsonLine(record) {
         const line = JSON.stringify(record);
         if (config.console && config.json) console.log(line);
-        if (fileStream) fileStream.write(`${line}\n`);
+        writeToFile(line);
     }
 
     function writePretty(record) {
@@ -141,7 +199,6 @@ function createLogger(overrides = {}) {
                 ['Component', record.customId],
                 ['Status', record.status ? record.status.toUpperCase() : undefined],
                 ['Duration', fmtDuration(record.durationMs)],
-                ['Trace ID', record.traceId],
                 ['Guild', record.guildName || record.guildId],
                 ['User', record.userTag || record.userId],
                 ['Handler', record.handler],
@@ -162,34 +219,31 @@ function createLogger(overrides = {}) {
     /** The single funnel every public logging call goes through. Never throws. */
     function _emit(level, event, context = {}, options = {}) {
         try {
-            // Feature: production debug mode — a temporary, scoped override that
-            // forces capture below the configured floor (e.g. trace/debug in
-            // prod) for one command/user/guild, without touching global config.
-            const debugForced = forensics.isDebugForced(context);
-            if (!isEnabled(config.level, level) && !debugForced) return;
+            if (!isEnabled(config.level, level)) return;
 
             const normalizedError = options.error !== undefined ? normalizeError(options.error) : null;
-            const message = options.message || humanizeMessage(event, context, { status: options.status, error: normalizedError });
+            const enrichedContext = ctxFactory.createContext(context);
+            const message = options.message || humanizeMessage(event, enrichedContext, { status: options.status, error: normalizedError });
 
             let record = {
                 timestamp: new Date().toISOString(),
                 level,
                 event,
                 message,
-                ...context,
+                ...enrichedContext,
                 ...(options.extra || {}),
             };
             if (options.status) record.status = options.status;
             if (options.retryCount !== undefined) record.retryCount = options.retryCount;
             if (options.category) record.category = options.category;
             if (normalizedError) record.error = normalizedError;
-            // Runtime/build change context — stamped on every record so a burst
-            // of errors right after a deploy is visible without extra lookups.
-            if (forensics.buildInfo.buildId) record.buildId = forensics.buildInfo.buildId;
-            if (forensics.buildInfo.deployId) record.deployId = forensics.buildInfo.deployId;
 
             if (config.redaction.enabled) {
-                record = redact(record, { extraKeys: config.redaction.extraKeys, maxStringLength: config.redaction.maxStringLength });
+                record = redact(record, {
+                    extraKeys: config.redaction.extraKeys,
+                    maxStringLength: config.redaction.maxStringLength,
+                    maxStackLength: config.redaction.maxStackLength,
+                });
             }
 
             // Durable sink — always happens, this is the audit trail of record.
@@ -197,26 +251,22 @@ function createLogger(overrides = {}) {
             writePretty(record);
 
             if (event === Events.COMMAND_END || event === Events.COMMAND_ERROR) {
-                stats.record(context.command, { status: options.status, durationMs: context.durationMs, traceId: context.traceId });
+                stats.record(enrichedContext.command, { status: options.status, durationMs: enrichedContext.durationMs });
             }
-
-            // Forensics ingestion is independent of webhook delivery — it's the
-            // local investigation index that /investigate and the forensics API
-            // read from, and it needs the full picture even if Discord posting
-            // is disabled or a record gets deduped off the webhook surface.
-            forensics.ingest(record);
 
             if (!config.webhook.enabled) return;
 
-            // Dedup only throttles the Discord-facing surface — console/json
-            // above already has the complete record regardless.
+            // Guild-scoped dedup only throttles the Discord webhook surface —
+            // console/JSON above retains every record, and an error in Guild A
+            // never suppresses alerts from Guild B.
             let webhookRecord = record;
             if (normalizedError && (level === 'error' || level === 'fatal')) {
-                const fp = fingerprint(normalizedError, context);
+                const fp = fingerprint(normalizedError, { ...enrichedContext, event });
                 const result = dedup.check(fp);
                 if (!result.shouldEmit) return;
-                webhookRecord = { ...record, fingerprint: fp };
-                if (result.previouslySuppressed > 0) webhookRecord.suppressedCount = result.previouslySuppressed;
+                if (result.previouslySuppressed > 0) {
+                    webhookRecord = { ...record, suppressedCount: result.previouslySuppressed };
+                }
             }
 
             const component = buildComponentImpl(webhookRecord);
@@ -224,7 +274,7 @@ function createLogger(overrides = {}) {
         } catch (err) {
             // The logger must never be the reason a command fails.
             try {
-                console.error('[logger] internal error while logging (swallowed):', err);
+                console.error('[logger] internal error while logging (swallowed):', scrubString(err?.message || String(err)));
             } catch {
                 /* nothing further we can do */
             }
@@ -261,25 +311,14 @@ function createLogger(overrides = {}) {
         } catch (err) {
             const durationMs = elapsedMs(t);
             _emit('error', errorEvent, { ...context, durationMs }, { status: 'failure', error: err, category: 'errors' });
-            throw err; // preserve the original error untouched — the logger never swallows command failures
+            throw err;
         }
     }
 
-    /**
-     * Wraps a slash-command handler with full lifecycle telemetry. Matches
-     * the design doc's `logger.command(name, context, async () => {...})`
-     * shape; the handler also optionally receives the enriched context as
-     * its first argument for callers who want it (e.g. to log sub-steps
-     * with the same traceId via logger.task()).
-     *
-     * baseContext.interaction (if provided) registers this call's context
-     * in a WeakMap so the command's own handler can retrieve it via
-     * logger.contextFor(interaction) and set ctx.metrics.apiCalls /
-     * ctx.metrics.cache for richer reporting — entirely optional.
-     */
+    /** Wraps a slash-command handler with full lifecycle telemetry. */
     async function command(name, baseContext = {}, handler) {
         const { interaction, ...rest } = baseContext;
-        const ctx = createContext({ ...rest, command: name, handler: rest.handler || defaultHandlerName(name), metrics: {} });
+        const ctx = ctxFactory.createContext({ ...rest, command: name, handler: rest.handler || defaultHandlerName(name), metrics: {} });
         if (interaction) contextByInteraction.set(interaction, ctx);
         try {
             return await runLifecycle({
@@ -300,7 +339,7 @@ function createLogger(overrides = {}) {
     /** Same idea as command(), for button/component interactions. */
     async function button(customId, baseContext = {}, handler) {
         const { interaction, ...rest } = baseContext;
-        const ctx = createContext({ ...rest, customId, metrics: {} });
+        const ctx = ctxFactory.createContext({ ...rest, customId, metrics: {} });
         if (interaction) contextByInteraction.set(interaction, ctx);
         try {
             return await runLifecycle({
@@ -316,24 +355,18 @@ function createLogger(overrides = {}) {
         }
     }
 
-    /**
-     * Generic instrumentation for non-command async work (DB queries,
-     * external API calls) — nothing in this bot uses it yet since there's
-     * no database or external API integration, but the taxonomy events
-     * (DATABASE_QUERY/DATABASE_ERROR, EXTERNAL_API_REQUEST/_ERROR) are
-     * ready the moment one gets added:
-     *   await logger.task({ event: Events.DATABASE_QUERY, errorEvent: Events.DATABASE_ERROR, context: logger.childContext(ctx), handler: () => db.query(...) })
-     */
+    /** Generic instrumentation for non-command async work (DB queries, external API calls). */
     async function task({ event, errorEvent, context, handler, category = 'debug' }) {
         const t = startTimer();
+        const taskCtx = ctxFactory.createContext(context);
         try {
-            const result = await handler(context);
+            const result = await handler(taskCtx);
             const durationMs = elapsedMs(t);
-            _emit('debug', event, { ...context, durationMs }, { status: 'success', category });
+            _emit('debug', event, { ...taskCtx, durationMs }, { status: 'success', category });
             return result;
         } catch (err) {
             const durationMs = elapsedMs(t);
-            _emit('warn', errorEvent, { ...context, durationMs }, { status: 'failure', error: err, category: 'errors' });
+            _emit('warn', errorEvent, { ...taskCtx, durationMs }, { status: 'failure', error: err, category: 'errors' });
             throw err;
         }
     }
@@ -343,49 +376,43 @@ function createLogger(overrides = {}) {
     }
 
     async function reportStartup(extra = {}) {
-        // A build/deploy change is exactly what feature #6 (runtime/build change
-        // context) needs to know about — record it if the caller passed any of
-        // buildId/deployId/gitSha, so subsequent investigations know how fresh
-        // the running process is.
-        const { buildId, deployId, gitSha, ...restExtra } = extra;
-        if (buildId || deployId || gitSha) forensics.recordBuildChange({ buildId, deployId, gitSha });
-
         const healthResults = await runHealthChecks(healthChecks);
-        const report = buildStartupReportRaw({ config, healthResults, ...restExtra });
-        const ctx = createContext({});
+        const safeHealth = config.redaction.enabled
+            ? healthResults.map((r) => ({ ...r, detail: r.detail ? scrubString(r.detail) : r.detail }))
+            : healthResults;
+        const report = buildStartupReportRaw({ config, shardId, healthResults: safeHealth, ...extra });
 
         if (config.console) console.log(config.json ? JSON.stringify(report.structured) : report.text);
-        if (fileStream) fileStream.write(`${JSON.stringify(report.structured)}\n`);
-        if (config.webhook.enabled) postTextReport('logs', 'BOT STARTUP DIAGNOSTICS', report.text, report.health === 'OK' ? 'info' : 'warn', ctx.traceId);
+        writeToFile(JSON.stringify({ timestamp: new Date().toISOString(), event: 'BOT_STARTUP_REPORT', ...report.structured }));
+        if (config.webhook.enabled) postTextReport('logs', 'BOT STARTUP DIAGNOSTICS', report.text, report.health === 'OK' ? 'info' : 'warn');
 
-        return { ...report, traceId: ctx.traceId };
+        return report;
     }
 
     async function reportShutdown(extra = {}) {
-        const report = buildShutdownReportRaw({ statsSnapshot: stats.snapshot(), queueStats: transport.getStats(), ...extra });
-        const ctx = createContext({});
+        const { queueStats, ...rest } = extra;
+        const report = buildShutdownReportRaw({
+            statsSnapshot: stats.snapshot(),
+            queueStats: queueStats ?? transport.getStats(),
+            ...rest,
+        });
 
         if (config.console) console.log(config.json ? JSON.stringify(report.structured) : report.text);
-        if (fileStream) fileStream.write(`${JSON.stringify(report.structured)}\n`);
-        if (config.webhook.enabled) postTextReport('logs', 'BOT SHUTDOWN REPORT', report.text, 'info', ctx.traceId);
+        writeToFile(JSON.stringify({ timestamp: new Date().toISOString(), event: 'BOT_SHUTDOWN_REPORT', ...report.structured }));
+        if (config.webhook.enabled) postTextReport('logs', 'BOT SHUTDOWN REPORT', report.text, 'info');
 
-        return { ...report, traceId: ctx.traceId };
+        return report;
     }
 
-    /** Startup/shutdown diagnostics as a Components v2 container, with the same investigation footer as every other log post. */
-    function postTextReport(category, title, text, level, traceId) {
+    /** Post startup/shutdown diagnostics as a clean Components v2 container. */
+    function postTextReport(category, title, text, level) {
         try {
             // eslint-disable-next-line global-require
             const { ContainerBuilder } = require('discord.js');
             const container = new ContainerBuilder()
                 .setAccentColor(level === 'warn' ? 0xf1c40f : 0x2ecc71)
-                .addTextDisplayComponents((textDisplay) => textDisplay.setContent(`## ${title}\n\`\`\`\n${text.slice(0, 3800)}\n\`\`\``))
-                .addSeparatorComponents((separator) => separator.setDivider(true))
-                .addTextDisplayComponents((textDisplay) => textDisplay
-                    .setContent(traceId
-                        ? `-# For Cause/Fix/Why use prefix \`/investigate traceid:${traceId}\``
-                        : '-# For Cause/Fix/Why use prefix investigation traceid:'));
-            transport.route({ level, event: title.replace(/\s+/g, '_'), category, traceId }, container);
+                .addTextDisplayComponents((textDisplay) => textDisplay.setContent(`## ${title}\n\`\`\`\n${text.slice(0, 3800)}\n\`\`\``));
+            transport.route({ level, event: title.replace(/\s+/g, '_'), category }, container);
         } catch (err) {
             consoleWrite('warn', `failed to build diagnostics component: ${err.message}`);
         }
@@ -413,7 +440,7 @@ function createLogger(overrides = {}) {
                 const mem = process.memoryUsage();
                 const lagMs = eventLoopDelay.mean / 1e6;
                 eventLoopDelay.reset();
-                _emit('debug', Events.PERFORMANCE_SNAPSHOT, createContext({
+                _emit('debug', Events.PERFORMANCE_SNAPSHOT, ctxFactory.createContext({
                     heapUsedMb: Math.round(mem.heapUsed / 1024 / 1024),
                     rssMb: Math.round(mem.rss / 1024 / 1024),
                     eventLoopLagMs: Number.isFinite(lagMs) ? Number(lagMs.toFixed(2)) : undefined,
@@ -425,7 +452,7 @@ function createLogger(overrides = {}) {
         if (config.performance.summaryIntervalMs > 0 && !summaryTimer) {
             summaryTimer = setInterval(() => {
                 const snap = stats.snapshot();
-                _emit('info', Events.PERFORMANCE_SUMMARY, createContext({}), {
+                _emit('info', Events.PERFORMANCE_SUMMARY, ctxFactory.createContext({}), {
                     message: `${snap.totalExecuted} command(s) executed, ${snap.totalFailed} failed, avg ${Math.round(snap.overallAvgDurationMs || 0)}ms`,
                     extra: { summary: snap },
                     category: 'performance',
@@ -443,13 +470,43 @@ function createLogger(overrides = {}) {
         tickTimer = memoryTimer = summaryTimer = eventLoopDelay = null;
     }
 
+    /**
+     * Graceful logger teardown: stops background timers, drains pending webhook
+     * payloads (which may write fallback records to the file stream), closes
+     * cached webhook clients, and flushes/closes the JSON log file stream.
+     */
+    function close({ timeoutMs = 5000 } = {}) {
+        if (closePromise) return closePromise;
+        closePromise = (async () => {
+            stopBackgroundTasks();
+            const flushResult = await transport.flushAll({ timeoutMs });
+            transport.destroy();
+            if (fileStream) {
+                fileStreamClosing = true;
+                await closeWriteStream(fileStream, timeoutMs);
+                fileStream = null;
+            }
+            return flushResult;
+        })();
+        return closePromise;
+    }
+
     startBackgroundTasks();
 
     return {
-        trace, debug, info, warn, error, fatal,
-        command, button, task,
-        fromInteraction: (interaction, contextOverrides) => fromInteraction(interaction, contextOverrides),
-        childContext: (parent, contextOverrides) => childContext(parent, contextOverrides),
+        trace,
+        debug,
+        info,
+        warn,
+        error,
+        fatal,
+        command,
+        button,
+        task,
+        createContext: (contextOverrides) => ctxFactory.createContext(contextOverrides),
+        fromInteraction: (interaction, contextOverrides) => ctxFactory.fromInteraction(interaction, contextOverrides),
+        childContext: (parent, contextOverrides) => ctxFactory.childContext(parent, contextOverrides),
+        getStaticFields: () => ctxFactory.getStaticFields(),
         contextFor: (interaction) => contextByInteraction.get(interaction),
         registerHealthCheck,
         reportStartup,
@@ -458,17 +515,8 @@ function createLogger(overrides = {}) {
         getStatsSnapshot: () => stats.snapshot(),
         flushAll: (opts) => transport.flushAll(opts),
         stopBackgroundTasks,
+        close,
         config,
-        // ---- forensics / investigation surface (used by the /investigate command) ----
-        forensics,
-        investigate: (traceId) => forensics.investigate(traceId),
-        getTimeline: (traceId) => forensics.getTimeline(traceId),
-        getTrends: (opts) => forensics.getTrends(opts),
-        filterLogs: (opts) => forensics.filter(opts),
-        searchLogs: (query, opts) => forensics.search(query, opts),
-        getInteractionTimeline: (opts) => forensics.getInteractionTimeline(opts),
-        enableDebugMode: (opts) => forensics.enableDebugMode(opts),
-        recordBuildChange: (info) => forensics.recordBuildChange(info),
     };
 }
 

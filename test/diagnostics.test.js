@@ -44,18 +44,23 @@ test('buildStartupReport reports DEGRADED when any health check fails', () => {
     assert.ok(report.text.includes('timeout'));
 });
 
-test('buildStartupReport reads shard id from client.shard when present', () => {
+test('buildStartupReport reads shard id from client.shard or configured shardId', () => {
     const config = loadConfig({ botVersion: '1.0.0' });
     const report = buildStartupReport({
         config, client: { shard: { ids: [3] } }, commandsLoaded: 1, eventsLoaded: 1, webhooksConfigured: 0, startupDurationMs: 100,
     });
     assert.equal(report.structured.shardId, 3);
+
+    const fallbackReport = buildStartupReport({
+        config, client: {}, shardId: 5, commandsLoaded: 1, eventsLoaded: 1, webhooksConfigured: 0, startupDurationMs: 100,
+    });
+    assert.equal(fallbackReport.structured.shardId, 5);
 });
 
 test('buildShutdownReport summarizes stats and pending queue depth', () => {
     const stats = new CommandStats();
-    stats.record('ping', { status: 'success', durationMs: 10, traceId: 't1' });
-    stats.record('ping', { status: 'failure', durationMs: 20, traceId: 't2' });
+    stats.record('startup', { status: 'success', durationMs: 10 });
+    stats.record('startup', { status: 'failure', durationMs: 20 });
 
     const report = buildShutdownReport({
         statsSnapshot: stats.snapshot(),

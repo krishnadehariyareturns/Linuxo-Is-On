@@ -4,18 +4,21 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loadConfig, deepMerge, thresholdsFor } = require('../src/lib/forensic-logger/core/config');
 
-test('loadConfig returns sane defaults with no overrides', () => {
+test('loadConfig returns sane defaults with no overrides and no investigate/AI config', () => {
     const c = loadConfig();
     assert.equal(typeof c.level, 'string');
     assert.equal(c.webhook.batchSize, 10);
     assert.equal(c.redaction.enabled, true);
+    assert.equal(c.redaction.maxStackLength, 4096);
+    assert.equal(c.forensics, undefined);
+    assert.equal(c.ai, undefined);
 });
 
 test('deepMerge overrides a nested key without dropping its siblings', () => {
     const base = { a: { x: 1, y: 2 }, b: 3 };
     const merged = deepMerge(base, { a: { x: 99 } });
     assert.equal(merged.a.x, 99);
-    assert.equal(merged.a.y, 2); // sibling preserved
+    assert.equal(merged.a.y, 2);
     assert.equal(merged.b, 3);
 });
 
@@ -28,8 +31,8 @@ test('deepMerge replaces arrays wholesale rather than merging them', () => {
 test('loadConfig overrides propagate through nested objects', () => {
     const c = loadConfig({ webhook: { categories: { errors: 'https://example.com/hook' } } });
     assert.equal(c.webhook.categories.errors, 'https://example.com/hook');
-    assert.equal(c.webhook.categories.logs, ''); // untouched sibling
-    assert.equal(c.webhook.retryLimit, 5); // untouched parent sibling
+    assert.equal(c.webhook.categories.logs, '');
+    assert.equal(c.webhook.retryLimit, 5);
 });
 
 test('thresholdsFor falls back to global defaults when no per-command override exists', () => {

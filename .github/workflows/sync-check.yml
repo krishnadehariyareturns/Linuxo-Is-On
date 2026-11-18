@@ -25,6 +25,7 @@ jobs:
             ':!node_modules/**' \
             ':!.env' \
             ':!*.log' \
+            ':!*.zip' \
             | sort > github-files.txt
 
       - name: Download SFTP file list
