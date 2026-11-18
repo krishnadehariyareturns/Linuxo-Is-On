@@ -8,7 +8,7 @@
  */
 class RollingWindow {
     constructor(maxSize = 500) {
-        this.maxSize = maxSize;
+        this.maxSize = Math.max(1, maxSize);
         this.values = [];
         this.cursor = 0;
         this.count = 0;
@@ -43,11 +43,13 @@ class RollingWindow {
 
 /**
  * Per-command success/failure counters and duration percentiles, plus the
- * single slowest call seen (for the shutdown report).
+ * single slowest call seen (for the shutdown report). Bounded by `maxCommands`
+ * so unexpected/dynamic command keys can never grow memory unboundedly.
  */
 class CommandStats {
-    constructor({ windowSize = 500 } = {}) {
-        this.windowSize = windowSize;
+    constructor({ windowSize = 500, maxCommands = 200 } = {}) {
+        this.windowSize = Math.max(1, windowSize);
+        this.maxCommands = Math.max(1, maxCommands);
         this.perCommand = new Map();
         this.totalExecuted = 0;
         this.totalFailed = 0;
@@ -55,20 +57,25 @@ class CommandStats {
     }
 
     _entry(command) {
-        let e = this.perCommand.get(command);
+        const key = String(command || 'unknown');
+        let e = this.perCommand.get(key);
         if (!e) {
+            if (this.perCommand.size >= this.maxCommands) {
+                const oldestKey = this.perCommand.keys().next().value;
+                this.perCommand.delete(oldestKey);
+            }
             e = {
                 success: 0,
                 failure: 0,
                 durations: new RollingWindow(this.windowSize),
-                slowest: null, // { durationMs, traceId }
+                slowest: null, // { durationMs }
             };
-            this.perCommand.set(command, e);
+            this.perCommand.set(key, e);
         }
         return e;
     }
 
-    record(command, { status, durationMs, traceId }) {
+    record(command, { status, durationMs } = {}) {
         const e = this._entry(command);
         this.totalExecuted++;
         if (status === 'success') e.success++;
@@ -76,10 +83,10 @@ class CommandStats {
             e.failure++;
             this.totalFailed++;
         }
-        if (typeof durationMs === 'number') {
+        if (typeof durationMs === 'number' && Number.isFinite(durationMs)) {
             e.durations.push(durationMs);
             if (!e.slowest || durationMs > e.slowest.durationMs) {
-                e.slowest = { durationMs, traceId };
+                e.slowest = { durationMs };
             }
         }
     }
@@ -126,14 +133,12 @@ class CommandStats {
  * Suppresses repeat webhook noise for the same failure fingerprint within a
  * rolling time window, while never affecting what gets written to
  * console/JSON (those stay complete — dedup only throttles the Discord-facing
- * surface). Each fingerprint that starts a new window returns
- * shouldEmit=true immediately; the count of subsequent suppressed repeats
- * is returned so callers can post a single "seen N more times" note later
- * if they want.
+ * surface). Strictly bounded by `maxEntries` with automatic expiry sweeping.
  */
 class ErrorDedup {
-    constructor({ windowMs = 60_000 } = {}) {
-        this.windowMs = windowMs;
+    constructor({ windowMs = 60_000, maxEntries = 1000 } = {}) {
+        this.windowMs = Math.max(0, windowMs);
+        this.maxEntries = Math.max(1, maxEntries);
         this.seen = new Map(); // fingerprint -> { firstAt, lastAt, count }
     }
 
@@ -142,12 +147,16 @@ class ErrorDedup {
         const existing = this.seen.get(fingerprint);
 
         if (!existing || now - existing.firstAt > this.windowMs) {
-            // A fresh window is starting. If the PREVIOUS window (now
-            // expired, or this is the very first sighting) had suppressed
-            // repeats, surface that count once so the first post-suppression
-            // post can say "this also happened N more times" instead of the
-            // gap just silently vanishing from the webhook-facing side.
             const previouslySuppressed = existing ? existing.count - 1 : 0;
+            if (existing) {
+                this.seen.delete(fingerprint);
+            } else if (this.seen.size >= this.maxEntries) {
+                this.sweep(now);
+                if (this.seen.size >= this.maxEntries) {
+                    const oldestFp = this.seen.keys().next().value;
+                    this.seen.delete(oldestFp);
+                }
+            }
             this.seen.set(fingerprint, { firstAt: now, lastAt: now, count: 1 });
             return { shouldEmit: true, suppressedCount: 0, previouslySuppressed };
         }
@@ -158,8 +167,7 @@ class ErrorDedup {
     }
 
     /** Drop entries whose window has fully expired, to bound memory. */
-    sweep() {
-        const now = Date.now();
+    sweep(now = Date.now()) {
         for (const [fp, entry] of this.seen.entries()) {
             if (now - entry.lastAt > this.windowMs) this.seen.delete(fp);
         }

@@ -6,13 +6,12 @@ const { renderBoxReport, renderSectionReport } = require('../src/lib/forensic-lo
 
 test('renderBoxReport produces a box where every line is the same visible width', () => {
     const box = renderBoxReport('COMMAND REPORT', [
-        ['Command', '/ping'],
+        ['Command', '/startup'],
         ['Status', 'SUCCESS'],
         ['Duration', '42 ms'],
-        ['Trace ID', '01J...'],
         ['Guild', 'A Much Longer Guild Name Than Usual'],
         ['User', 'someuser'],
-        ['Handler', 'PingCommand'],
+        ['Handler', 'StartupCommand'],
     ]);
     const widths = box.split('\n').map((l) => [...l].length);
     assert.ok(widths.every((w) => w === widths[0]), `expected all lines equal width, got ${widths}`);
@@ -28,7 +27,7 @@ test('renderBoxReport starts with ╭ and ends the box with ╰...╯', () => {
 
 test('renderBoxReport omits rows with undefined/null/empty values', () => {
     const box = renderBoxReport('COMMAND REPORT', [
-        ['Command', '/ping'],
+        ['Command', '/startup'],
         ['API calls', undefined],
         ['Cache', null],
         ['Notes', ''],

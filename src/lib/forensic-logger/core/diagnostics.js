@@ -52,15 +52,16 @@ async function runHealthChecks(checks) {
  * @param {number} opts.startupDurationMs
  * @param {Array<{name:string, ok:boolean, detail?:string}>} opts.healthResults
  */
-function buildStartupReport({ config, client, commandsLoaded, eventsLoaded, webhooksConfigured, startupDurationMs, healthResults = [] }) {
+function buildStartupReport({ config, client, shardId = 0, commandsLoaded, eventsLoaded, webhooksConfigured, startupDurationMs, healthResults = [] }) {
     const allHealthy = healthResults.every((r) => r.ok);
     const health = healthResults.length === 0 ? 'OK' : allHealthy ? 'OK' : 'DEGRADED';
+    const resolvedShardId = client?.shard?.ids?.[0] ?? shardId ?? 0;
 
     const rows = [
         ['Version', config.botVersion],
         ['Node', process.version],
         ['Environment', config.environment],
-        ['Shard', client?.shard?.ids?.[0] ?? 0],
+        ['Shard', resolvedShardId],
         ['Commands', `${commandsLoaded} loaded`],
         ['Events', `${eventsLoaded} loaded`],
         ...healthResults.map((r) => [r.name, r.ok ? 'OK' : `FAILED${r.detail ? ` (${r.detail})` : ''}`]),
@@ -77,7 +78,7 @@ function buildStartupReport({ config, client, commandsLoaded, eventsLoaded, webh
             version: config.botVersion,
             nodeVersion: process.version,
             environment: config.environment,
-            shardId: client?.shard?.ids?.[0] ?? 0,
+            shardId: resolvedShardId,
             commandsLoaded,
             eventsLoaded,
             webhooksConfigured,

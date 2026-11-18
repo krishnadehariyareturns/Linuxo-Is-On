@@ -3,13 +3,19 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loadConfig } = require('../src/lib/forensic-logger/core/config');
-const { createWebhookTransport, categoryFor, resolveCategory, backoffDelay, extractRetryAfterMs } = require('../src/lib/forensic-logger/core/webhookTransport');
+const {
+    createWebhookTransport,
+    categoryFor,
+    resolveCategory,
+    backoffDelay,
+    extractRetryAfterMs,
+} = require('../src/lib/forensic-logger/core/webhookTransport');
 
 function testConfig(overrides = {}) {
     return loadConfig({
         webhook: {
             batchSize: 10,
-            flushIntervalMs: 100_000, // effectively "never due by time" unless a test wants it
+            flushIntervalMs: 100_000,
             retryLimit: 2,
             retryBaseMs: 1,
             retryCapMs: 5,
@@ -33,120 +39,165 @@ function record(level, event, extra = {}) {
     return { level, event, timestamp: new Date().toISOString(), message: 'test', ...extra };
 }
 
-test('categoryFor routes by level and by explicit event overrides', () => {
+function httpError(status, message = `HTTP ${status}`) {
+    const err = new Error(message);
+    err.status = status;
+    return err;
+}
+
+function netError(code, message = code) {
+    const err = new Error(message);
+    err.code = code;
+    return err;
+}
+
+test('categoryFor and resolveCategory route and fall back accurately', () => {
     assert.equal(categoryFor(record('info', 'COMMAND_END')), 'logs');
     assert.equal(categoryFor(record('error', 'COMMAND_ERROR')), 'errors');
     assert.equal(categoryFor(record('fatal', 'BOT_CRASH')), 'errors');
     assert.equal(categoryFor(record('warn', 'COMMAND_PERMISSION_DENIED')), 'security');
     assert.equal(categoryFor(record('warn', 'SLOW_COMMAND')), 'performance');
     assert.equal(categoryFor(record('debug', 'CACHE_HIT')), 'debug');
+
+    const fallbackCfg = testConfig({ categories: { logs: 'https://example.com/logs', errors: '', security: '', performance: '', debug: '' } });
+    assert.equal(resolveCategory(record('error', 'COMMAND_ERROR'), fallbackCfg), 'logs');
+
+    const emptyCfg = testConfig({ categories: { logs: '', errors: '', security: '', performance: '', debug: '' } });
+    assert.equal(resolveCategory(record('info', 'COMMAND_END'), emptyCfg), null);
 });
 
-test('resolveCategory falls back to logs when the primary category has no URL configured', () => {
-    const config = testConfig({ categories: { logs: 'https://example.com/logs', errors: '', security: '', performance: '', debug: '' } });
-    const cat = resolveCategory(record('error', 'COMMAND_ERROR'), config);
-    assert.equal(cat, 'logs');
-});
+test('route(), batchSize gating, and component chunking work properly', async () => {
+    const config = testConfig({ batchSize: 5, maxQueueSize: 100 });
+    const calls = [];
+    const transport = createWebhookTransport({
+        config,
+        sendFn: async (cat, payload) => { calls.push({ cat, count: payload.components.length }); },
+    });
 
-test('resolveCategory returns null when nothing in the chain is configured', () => {
-    const config = testConfig({ categories: { logs: '', errors: '', security: '', performance: '', debug: '' } });
-    const cat = resolveCategory(record('info', 'COMMAND_END'), config);
-    assert.equal(cat, null);
-});
-
-test('route() respects per-category minimum level', () => {
-    const config = testConfig();
-    const sent = [];
-    const transport = createWebhookTransport({ config, sendFn: async (cat, payload) => { sent.push({ cat, payload }); } });
-
-    // errors category minLevel is 'error' by default — a WARN COMMAND_ERROR-ish
-    // event still routes to 'errors' by categoryFor, but a plain warn that's
-    // not error/fatal never resolves to 'errors' in the first place, so
-    // instead test debug-level suppression against the 'logs' floor (info).
-    const result = transport.route(record('debug', 'COMMAND_START'), { title: 'x' });
-    assert.equal(result, null); // debug < logs' minLevel (info), and debug category has no URL
-});
-
-test('enqueued jobs are delivered on tick() and the queue drains on success', async () => {
-    const config = testConfig();
-    const sent = [];
-    const transport = createWebhookTransport({ config, sendFn: async (cat, payload) => { sent.push({ cat, payload }); } });
-
-    transport.route(record('info', 'COMMAND_END'), { title: 'ok' });
-    assert.equal(transport.getStats().logs.queued, 1);
-
-    await transport.flush('logs', { force: true });
-    assert.equal(transport.getStats().logs.queued, 0);
-    assert.equal(sent.length, 1);
-    assert.equal(sent[0].cat, 'logs');
-    assert.equal(sent[0].payload.components.length, 1);
-});
-
-test('flush is gated by batchSize when not forced', async () => {
-    const config = testConfig({ batchSize: 5, flushIntervalMs: 100_000 });
-    const sent = [];
-    const transport = createWebhookTransport({ config, sendFn: async () => { sent.push(1); } });
+    assert.equal(transport.route(record('debug', 'COMMAND_START'), {}), null);
 
     for (let i = 0; i < 3; i++) transport.route(record('info', 'COMMAND_END'), {});
-    await transport.flush('logs'); // not forced, only 3 queued < batchSize 5, and not due by time
-    assert.equal(sent.length, 0);
-    assert.equal(transport.getStats().logs.queued, 3);
-
-    for (let i = 0; i < 2; i++) transport.route(record('info', 'COMMAND_END'), {}); // now 5 queued, hits batchSize
     await transport.flush('logs');
-    assert.equal(sent.length, 1); // one send call carrying all 5 components
-    assert.equal(transport.getStats().logs.queued, 0);
-});
+    assert.equal(calls.length, 0);
 
-test('batches larger than 5 components are split into multiple Discord-sized sends', async () => {
-    const config = testConfig({ batchSize: 25, maxQueueSize: 100 });
-    const calls = [];
-    const transport = createWebhookTransport({ config, sendFn: async (cat, payload) => { calls.push(payload.components.length); } });
+    for (let i = 0; i < 2; i++) transport.route(record('info', 'COMMAND_END'), {});
+    await transport.flush('logs');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].count, 5);
 
+    calls.length = 0;
     for (let i = 0; i < 23; i++) transport.route(record('info', 'COMMAND_END'), {});
     await transport.flush('logs', { force: true });
-
-    assert.deepEqual(calls, [5, 5, 5, 5, 3]);
+    assert.deepEqual(calls.map((c) => c.count), [5, 5, 5, 5, 3]);
 });
 
-test('retries on failure and eventually succeeds within retryLimit', async () => {
-    const config = testConfig({ retryLimit: 3 });
+test('fails fast with zero retries on permanent 4xx errors (400, 401, 403, 404) without opening circuit breaker', async () => {
+    for (const status of [400, 401, 403, 404]) {
+        const config = testConfig({ retryLimit: 3, circuitBreakerThreshold: 1 });
+        let attempts = 0;
+        const failed = [];
+        const logs = [];
+        const transport = createWebhookTransport({
+            config,
+            sendFn: async () => {
+                attempts++;
+                throw httpError(status, `Client error ${status}`);
+            },
+            onDeliveryFailure: (cat, recs) => failed.push({ cat, recs }),
+            onInternalLog: (level, message, data) => logs.push({ level, message, data }),
+        });
+
+        transport.route(record('info', 'COMMAND_END', { tag: status }), {});
+        await transport.flush('logs', { force: true });
+
+        assert.equal(attempts, 1, `HTTP ${status} must not be retried`);
+        assert.equal(failed.length, 1, `HTTP ${status} must invoke onDeliveryFailure`);
+        assert.equal(transport.getStats().logs.circuitOpen, false, `HTTP ${status} must not trip circuit breaker`);
+        assert.ok(logs.some((l) => l.level === 'error' && l.message.includes('not retrying')));
+    }
+});
+
+test('retries transient 429, 5xx, and network errors and recovers when a retry succeeds', async () => {
+    const transientFactories = [
+        () => httpError(429, 'Too Many Requests'),
+        () => httpError(500, 'Internal Server Error'),
+        () => httpError(503, 'Service Unavailable'),
+        () => netError('ECONNRESET', 'socket hang up'),
+        () => netError('ETIMEDOUT', 'timed out'),
+    ];
+
+    for (const makeErr of transientFactories) {
+        const config = testConfig({ retryLimit: 3 });
+        let attempts = 0;
+        const transport = createWebhookTransport({
+            config,
+            sendFn: async () => {
+                attempts++;
+                if (attempts < 3) throw makeErr();
+            },
+        });
+
+        transport.route(record('info', 'COMMAND_END'), {});
+        await transport.flush('logs', { force: true });
+
+        assert.equal(attempts, 3);
+        assert.equal(transport.getStats().logs.queued, 0);
+        assert.equal(transport.getStats().logs.circuitOpen, false);
+    }
+});
+
+test('exhausting transient retries invokes onDeliveryFailure and opens the circuit breaker', async () => {
+    const config = testConfig({ retryLimit: 1, circuitBreakerThreshold: 2, circuitBreakerCooldownMs: 30 });
     let attempts = 0;
+    const failed = [];
     const transport = createWebhookTransport({
         config,
         sendFn: async () => {
             attempts++;
-            if (attempts < 3) throw new Error('temporary failure');
+            throw httpError(503, 'upstream down');
         },
+        onDeliveryFailure: (category, records) => failed.push({ category, records }),
+    });
+
+    transport.route(record('info', 'COMMAND_END', { guildId: 'g1' }), {});
+    await transport.flush('logs', { force: true }); // 1 initial + 1 retry = 2 attempts, consecutiveFailures = 1
+    assert.equal(attempts, 2);
+    assert.equal(transport.getStats().logs.circuitOpen, false);
+
+    transport.route(record('info', 'COMMAND_END', { guildId: 'g2' }), {});
+    await transport.flush('logs', { force: true }); // +2 attempts = 4, consecutiveFailures = 2 -> circuit opens
+    assert.equal(attempts, 4);
+    assert.equal(failed.length, 2);
+    assert.equal(failed[0].records[0].guildId, 'g1');
+    assert.equal(transport.getStats().logs.circuitOpen, true);
+
+    // Non-forced flush skips sendFn while circuit is open.
+    transport.route(record('info', 'COMMAND_END'), {});
+    await transport.flush('logs');
+    assert.equal(attempts, 4);
+});
+
+test('circuit closes again after a successful send once cooldown has elapsed', async () => {
+    const config = testConfig({ retryLimit: 0, circuitBreakerThreshold: 1, circuitBreakerCooldownMs: 20 });
+    let shouldFail = true;
+    const transport = createWebhookTransport({
+        config,
+        sendFn: async () => { if (shouldFail) throw netError('ECONNRESET'); },
     });
 
     transport.route(record('info', 'COMMAND_END'), {});
     await transport.flush('logs', { force: true });
+    assert.equal(transport.getStats().logs.circuitOpen, true);
 
-    assert.equal(attempts, 3);
-    assert.equal(transport.getStats().logs.queued, 0); // eventually delivered, not stuck
-});
-
-test('exhausting retries triggers onDeliveryFailure with the original records', async () => {
-    const config = testConfig({ retryLimit: 1 });
-    const failed = [];
-    const transport = createWebhookTransport({
-        config,
-        sendFn: async () => { throw new Error('always fails'); },
-        onDeliveryFailure: (category, records) => failed.push({ category, records }),
-    });
-
-    transport.route(record('info', 'COMMAND_END', { traceId: 't1' }), {});
+    shouldFail = false;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    transport.route(record('info', 'COMMAND_END'), {});
     await transport.flush('logs', { force: true });
-
-    assert.equal(failed.length, 1);
-    assert.equal(failed[0].category, 'logs');
-    assert.equal(failed[0].records[0].traceId, 't1');
+    assert.equal(transport.getStats().logs.circuitOpen, false);
 });
 
-test('respects a Discord-provided retry_after instead of blind backoff', async () => {
+test('respects Discord retryAfter rate-limit hints', async () => {
     const config = testConfig({ retryLimit: 2 });
-    const delays = [];
     const internalLogs = [];
     let attempts = 0;
     const transport = createWebhookTransport({
@@ -154,8 +205,8 @@ test('respects a Discord-provided retry_after instead of blind backoff', async (
         sendFn: async () => {
             attempts++;
             if (attempts === 1) {
-                const err = new Error('rate limited');
-                err.retryAfter = 5; // ms — @discordjs/rest's own field, always already-ms
+                const err = httpError(429, 'rate limited');
+                err.retryAfter = 5;
                 throw err;
             }
         },
@@ -168,95 +219,34 @@ test('respects a Discord-provided retry_after instead of blind backoff', async (
     const retryLog = internalLogs.find((l) => l.message.includes('retrying'));
     assert.ok(retryLog);
     assert.equal(retryLog.data.rateLimited, true);
+    assert.equal(retryLog.data.delayMs, 5);
 });
 
-test('circuit breaker opens after consecutiveFailures crosses threshold and blocks further sends', async () => {
-    const config = testConfig({ retryLimit: 0, circuitBreakerThreshold: 2, circuitBreakerCooldownMs: 10_000 });
-    let callCount = 0;
-    const transport = createWebhookTransport({
-        config,
-        sendFn: async () => { callCount++; throw new Error('down'); },
-    });
+test('backpressure drops oldest entries and flushAll force-drains all categories', async () => {
+    const bpConfig = testConfig({ maxQueueSize: 3 });
+    const bpTransport = createWebhookTransport({ config: bpConfig, sendFn: async () => {} });
+    for (let i = 0; i < 6; i++) bpTransport.route(record('info', 'COMMAND_END', { i }), {});
+    assert.equal(bpTransport.getStats().logs.queued, 3);
+    assert.equal(bpTransport.getStats().logs.dropped, 3);
 
-    transport.route(record('info', 'COMMAND_END'), {});
-    await transport.flush('logs', { force: true }); // failure #1
-    transport.route(record('info', 'COMMAND_END'), {});
-    await transport.flush('logs', { force: true }); // failure #2 -> circuit should open
-
-    assert.equal(transport.getStats().logs.circuitOpen, true);
-
-    const callsBeforeOpen = callCount;
-    transport.route(record('info', 'COMMAND_END'), {});
-    await transport.flush('logs', { force: true }); // circuit open -> should NOT call sendFn again... but force bypasses circuit intentionally for shutdown flush semantics
-    // Note: force=true is used by flushAll for shutdown and intentionally
-    // still attempts delivery even with the circuit open (best-effort drain).
-    // Test the *non-forced* path actually respects the open circuit instead:
-    transport.route(record('info', 'COMMAND_END'), {});
-    const beforeNonForced = callCount;
-    await transport.flush('logs'); // not forced now
-    assert.equal(callCount, beforeNonForced); // no new sendFn call — circuit is open
-});
-
-test('circuit closes again after a successful send once cooldown has elapsed', async () => {
-    const config = testConfig({ retryLimit: 0, circuitBreakerThreshold: 1, circuitBreakerCooldownMs: 20 });
-    let shouldFail = true;
-    const transport = createWebhookTransport({
-        config,
-        sendFn: async () => { if (shouldFail) throw new Error('down'); },
-    });
-
-    transport.route(record('info', 'COMMAND_END'), {});
-    await transport.flush('logs', { force: true });
-    assert.equal(transport.getStats().logs.circuitOpen, true);
-
-    shouldFail = false;
-    await new Promise((resolve) => setTimeout(resolve, 30)); // let cooldown elapse
-    transport.route(record('info', 'COMMAND_END'), {});
-    await transport.flush('logs', { force: true });
-
-    assert.equal(transport.getStats().logs.circuitOpen, false);
-});
-
-test('backpressure drops oldest entries once maxQueueSize is exceeded', () => {
-    const config = testConfig({ maxQueueSize: 3 });
-    const transport = createWebhookTransport({ config, sendFn: async () => {} });
-
-    for (let i = 0; i < 6; i++) transport.route(record('info', 'COMMAND_END', { i }), {});
-
-    const stats = transport.getStats().logs;
-    assert.equal(stats.queued, 3);
-    assert.equal(stats.dropped, 3);
-});
-
-test('flushAll force-drains every category regardless of batch/interval gating', async () => {
-    const config = testConfig({ batchSize: 100, flushIntervalMs: 100_000 });
+    const drainConfig = testConfig({ batchSize: 100, flushIntervalMs: 100_000 });
     const sent = [];
-    const transport = createWebhookTransport({ config, sendFn: async (cat) => { sent.push(cat); } });
-
-    transport.route(record('info', 'COMMAND_END'), {});
-    transport.route(record('error', 'COMMAND_ERROR'), {});
-    transport.route(record('warn', 'COMMAND_PERMISSION_DENIED'), {});
-
-    await transport.flushAll({ timeoutMs: 2000 });
-
-    assert.ok(sent.includes('logs'));
-    assert.ok(sent.includes('errors'));
-    assert.ok(sent.includes('security'));
+    const drainTransport = createWebhookTransport({ config: drainConfig, sendFn: async (cat) => { sent.push(cat); } });
+    drainTransport.route(record('info', 'COMMAND_END'), {});
+    drainTransport.route(record('error', 'COMMAND_ERROR'), {});
+    drainTransport.route(record('warn', 'COMMAND_PERMISSION_DENIED'), {});
+    await drainTransport.flushAll({ timeoutMs: 2000 });
+    assert.ok(sent.includes('logs') && sent.includes('errors') && sent.includes('security'));
 });
 
-test('backoffDelay grows exponentially and respects the cap', () => {
+test('backoffDelay and extractRetryAfterMs handle common shapes', () => {
     const opts = { retryBaseMs: 100, retryCapMs: 1000 };
-    const d1 = backoffDelay(1, opts);
-    const d2 = backoffDelay(2, opts);
-    const d5 = backoffDelay(5, opts);
-    assert.ok(d1 >= 100 && d1 <= 120);
-    assert.ok(d2 >= 200 && d2 <= 240);
-    assert.ok(d5 <= 1200); // capped, plus max 20% jitter on the cap
-});
+    assert.ok(backoffDelay(1, opts) >= 100 && backoffDelay(1, opts) <= 120);
+    assert.ok(backoffDelay(2, opts) >= 200 && backoffDelay(2, opts) <= 240);
+    assert.ok(backoffDelay(5, opts) <= 1200);
 
-test('extractRetryAfterMs reads several common error shapes', () => {
-    assert.equal(extractRetryAfterMs({ retryAfter: 1500 }), 1500); // already ms, used as-is
-    assert.equal(extractRetryAfterMs({ retry_after: 2 }), 2000); // seconds -> ms
+    assert.equal(extractRetryAfterMs({ retryAfter: 1500 }), 1500);
+    assert.equal(extractRetryAfterMs({ retry_after: 2 }), 2000);
     assert.equal(extractRetryAfterMs({ rawError: { retry_after: 3 } }), 3000);
     assert.equal(extractRetryAfterMs({ data: { retry_after: 0.5 } }), 500);
     assert.equal(extractRetryAfterMs({}), null);

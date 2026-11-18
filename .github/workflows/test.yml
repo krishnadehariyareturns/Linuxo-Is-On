@@ -1,0 +1,78 @@
+name: Test and Report
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Node.js tests and security audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests and generate report
+        shell: bash
+        run: |
+          set +e
+          npm test 2>&1 | tee test-output.txt
+          TEST_STATUS=${PIPESTATUS[0]}
+          npm audit --audit-level=high 2>&1 | tee audit-output.txt
+          AUDIT_STATUS=${PIPESTATUS[0]}
+          set -e
+
+          {
+            echo "# CI Test Report"
+            echo
+            echo "- Commit: ${GITHUB_SHA}"
+            echo "- Event: ${GITHUB_EVENT_NAME}"
+            echo "- Node: $(node --version)"
+            echo "- npm: $(npm --version)"
+            echo
+            echo "## Test result"
+            if [ "$TEST_STATUS" -eq 0 ]; then echo "PASS"; else echo "FAIL (exit $TEST_STATUS)"; fi
+            echo
+            echo '### npm test output'
+            echo '~~~text'
+            cat test-output.txt
+            echo '~~~'
+            echo
+            echo "## Dependency audit"
+            if [ "$AUDIT_STATUS" -eq 0 ]; then echo "PASS: no high or critical audit findings."; else echo "FAIL (exit $AUDIT_STATUS)"; fi
+            echo
+            echo '### npm audit output'
+            echo '~~~text'
+            cat audit-output.txt
+            echo '~~~'
+          } > test-report.md
+
+          cat test-report.md >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$TEST_STATUS" -ne 0 ] || [ "$AUDIT_STATUS" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: |
+            test-report.md
+            test-output.txt
+            audit-output.txt
+          if-no-files-found: ignore
+          retention-days: 30

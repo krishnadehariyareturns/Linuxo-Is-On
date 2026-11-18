@@ -2,46 +2,63 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createContext, childContext, fromInteraction, initStaticFields } = require('../src/lib/forensic-logger/core/context');
+const {
+    createContextFactory,
+    createContext,
+    childContext,
+    fromInteraction,
+} = require('../src/lib/forensic-logger/core/context');
 
-test('createContext includes static + generated fields set via initStaticFields', () => {
-    initStaticFields({ botVersion: '1.0.0', shardId: 2 });
-    const ctx = createContext({});
-    assert.equal(ctx.botVersion, '1.0.0');
-    assert.equal(ctx.shardId, 2);
-    assert.ok(ctx.traceId);
-    assert.ok(ctx.requestId);
-    assert.equal(ctx.nodeVersion, process.version);
+test('createContextFactory creates isolated instance-scoped static fields', () => {
+    const factoryA = createContextFactory({ botVersion: '1.0.0', shardId: 2 });
+    const factoryB = createContextFactory({ botVersion: '2.5.0', shardId: 7 });
+
+    const ctxA = factoryA.createContext({ guildId: 'g1' });
+    const ctxB = factoryB.createContext({ guildId: 'g2' });
+
+    assert.equal(ctxA.botVersion, '1.0.0');
+    assert.equal(ctxA.shardId, 2);
+    assert.equal(ctxA.guildId, 'g1');
+
+    assert.equal(ctxB.botVersion, '2.5.0');
+    assert.equal(ctxB.shardId, 7);
+    assert.equal(ctxB.guildId, 'g2');
+
+    // Re-creating via factoryA after factoryB still retains factoryA's own metadata.
+    const ctxA2 = factoryA.fromInteraction(null);
+    assert.equal(ctxA2.botVersion, '1.0.0');
+    assert.equal(ctxA2.shardId, 2);
 });
 
-test('initStaticFields is authoritative regardless of call order with fromInteraction', () => {
-    // Simulates the exact bug this design avoids: fromInteraction running
-    // before any explicit init must NOT be allowed to permanently lock in
-    // botVersion 'unknown' for the rest of the process.
-    initStaticFields({ botVersion: '2.0.0' });
-    const ctx = fromInteraction(null);
-    assert.equal(ctx.botVersion, '2.0.0');
+test('contexts never generate traceId, requestId, parentRequestId, or logId', () => {
+    const factory = createContextFactory({ botVersion: '1.0.0', shardId: 0 });
+    const ctx = factory.createContext({ command: 'startup' });
+    const child = factory.childContext(ctx, { event: 'DATABASE_QUERY' });
+
+    for (const obj of [ctx, child, createContext({}), fromInteraction(null)]) {
+        assert.equal(obj.traceId, undefined);
+        assert.equal(obj.requestId, undefined);
+        assert.equal(obj.parentRequestId, undefined);
+        assert.equal(obj.logId, undefined);
+    }
 });
 
 test('createContext merges overrides on top of base fields', () => {
-    const ctx = createContext({ guildId: 'g1', command: 'ping' });
+    const ctx = createContext({ guildId: 'g1', command: 'startup' });
     assert.equal(ctx.guildId, 'g1');
-    assert.equal(ctx.command, 'ping');
+    assert.equal(ctx.command, 'startup');
+    assert.equal(ctx.nodeVersion, process.version);
 });
 
-test('createContext lets an explicit traceId override the generated one', () => {
-    const ctx = createContext({ traceId: 'fixed-trace' });
-    assert.equal(ctx.traceId, 'fixed-trace');
-});
-
-test('childContext preserves the parent traceId', () => {
-    const parent = createContext({ command: 'ping' });
-    const child = childContext(parent, { event: 'DATABASE_QUERY' });
-    assert.equal(child.traceId, parent.traceId);
-    assert.equal(child.parentRequestId, parent.requestId);
-    assert.notEqual(child.requestId, parent.requestId);
+test('childContext inherits parent fields and merges child overrides', () => {
+    const factory = createContextFactory({ botVersion: '1.2.3', shardId: 1 });
+    const parent = factory.createContext({ command: 'startup', guildId: 'g1' });
+    const child = factory.childContext(parent, { event: 'DATABASE_QUERY' });
+    assert.equal(child.command, 'startup');
+    assert.equal(child.guildId, 'g1');
+    assert.equal(child.botVersion, '1.2.3');
+    assert.equal(child.shardId, 1);
     assert.equal(child.event, 'DATABASE_QUERY');
-    assert.equal(child.command, 'ping'); // inherited
 });
 
 test('fromInteraction extracts guild/channel/user/command fields', () => {
@@ -51,7 +68,7 @@ test('fromInteraction extracts guild/channel/user/command fields', () => {
         channelId: 'c1',
         user: { id: 'u1', tag: 'user#0001' },
         id: 'i1',
-        commandName: 'ping',
+        commandName: 'startup',
         isChatInputCommand: () => true,
         isButton: () => false,
         options: { getSubcommand: () => null },
@@ -63,7 +80,7 @@ test('fromInteraction extracts guild/channel/user/command fields', () => {
     assert.equal(ctx.userId, 'u1');
     assert.equal(ctx.userTag, 'user#0001');
     assert.equal(ctx.interactionId, 'i1');
-    assert.equal(ctx.command, 'ping');
+    assert.equal(ctx.command, 'startup');
 });
 
 test('fromInteraction handles DM interactions with null guildId', () => {
@@ -73,7 +90,7 @@ test('fromInteraction handles DM interactions with null guildId', () => {
         channelId: 'c1',
         user: { id: 'u1', tag: 'user#0001' },
         id: 'i1',
-        commandName: 'ping',
+        commandName: 'startup',
         isChatInputCommand: () => true,
         isButton: () => false,
         options: { getSubcommand: () => null },
@@ -100,5 +117,6 @@ test('fromInteraction extracts customId for button interactions', () => {
 
 test('fromInteraction handles a missing interaction gracefully', () => {
     const ctx = fromInteraction(null);
-    assert.ok(ctx.traceId);
+    assert.equal(ctx.nodeVersion, process.version);
+    assert.equal(ctx.pid, process.pid);
 });
