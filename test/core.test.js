@@ -232,7 +232,7 @@ test('error dedup suppresses duplicates in the same guild without cross-guild su
 
     const errorRecords = recordsIn(sent).filter((r) => r.category === 'errors');
     assert.equal(errorRecords.length, 2, 'guild-a duplicate suppressed, guild-b still delivered');
-    assert.deepEqual(errorRecords.map((r) => r.guildId), ['guild-a', 'guild-b']);
+    assert.deepEqual(errorRecords.map((r) => r.guildId), ['[REDACTED]', '[REDACTED]']);
     await logger.close();
 });
 
