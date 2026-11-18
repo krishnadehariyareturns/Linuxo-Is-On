@@ -15,6 +15,9 @@ const DEFAULT_SENSITIVE_KEYS = [
     'secret',
     'secrets',
     'api_key',
+    'api_secret',
+    'aws_secret_access_key',
+    'secret_access_key',
     'access_key',
     'secret_key',
     'private_key',
@@ -98,7 +101,7 @@ const VALUE_SCRUBBERS = [
     },
     // JSON-serialized secret fields inside stringified payloads
     {
-        pattern: /"((?:discord_token|access_token|refresh_token|id_token|bot_token|auth_token|token|authorization|password|passwd|passphrase|api_key|apikey|access_key|secret_key|private_key|client_secret|secret|webhook_url|set-cookie|cookie))"\s*:\s*"(?!\[REDACTED\])[^"]*"/gi,
+        pattern: /"((?:discord_token|access_token|refresh_token|id_token|bot_token|auth_token|token|authorization|password|passwd|passphrase|api_key|apikey|api_secret|aws_secret_access_key|secret_access_key|access_key|secret_key|private_key|client_secret|secret|webhook_url|set-cookie|cookie))"\s*:\s*"(?!\[REDACTED\])[^"]*"/gi,
         replacement: `"$1":"${REDACTED}"`,
     },
     // Inline secret key=value or key: value assignments inside free-form strings/logs
