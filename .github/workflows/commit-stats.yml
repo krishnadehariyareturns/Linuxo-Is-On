@@ -3,7 +3,7 @@ name: Update Commit Stats
 on:
   workflow_dispatch:
   schedule:
-    - cron: "17 0 * * 1"
+    - cron: "*/30 * * * *"
   push:
     branches: [main]
     paths-ignore:
