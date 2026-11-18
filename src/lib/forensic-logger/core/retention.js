@@ -22,7 +22,7 @@ function createRetentionStore({ filePath, retentionDays = 14, now = Date.now } =
             if (err.code !== 'ENOENT') throw err;
             entries = [];
         }
-        return pruneExpired();
+        return entries.length;
     }
 
     function isValidEntry(entry) {
