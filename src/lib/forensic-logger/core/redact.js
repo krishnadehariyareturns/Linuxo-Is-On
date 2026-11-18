@@ -23,6 +23,11 @@ const DEFAULT_SENSITIVE_KEYS = [
     'private_key',
     'client_secret',
     'webhook_url',
+    // Discord/account identifiers and user-supplied personal data.
+    'user_id', 'user_tag', 'guild_id', 'guild_name', 'channel_id', 'interaction_id',
+    'message_id', 'member_id', 'display_name', 'email', 'phone', 'phone_number',
+    'ip_address', 'ip', 'street_address', 'postal_address', 'message_content',
+    'attachment_url', 'avatar_url',
     'credential',
     'credentials',
 ];
@@ -49,6 +54,9 @@ const VALUE_SCRUBBERS = [
         pattern: /\b([a-z][a-z0-9+.-]*:\/\/[^/\s:@"'<>]+):([^@\s/"'<>]+)@/gi,
         replacement: `$1:${REDACTED}@`,
     },
+    // Common personal identifiers embedded in otherwise free-form text.
+    { pattern: /(?<!\[)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, replacement: REDACTED },
+    { pattern: /\b(?:\d{1,3}\.){3}\d{1,3}\b/g, replacement: REDACTED },
     // Sensitive URL query parameters (?token=..., &api_key=..., etc.)
     {
         pattern: /([?&](?:access_token|refresh_token|id_token|bot_token|auth_token|token|api_key|apikey|client_secret|secret_key|secret|password|passwd|auth)=)[^&#\s"'<>)\]]+/gi,

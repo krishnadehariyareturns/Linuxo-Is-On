@@ -1,5 +1,7 @@
 'use strict';
 
+const path = require('node:path');
+
 function isPlainObject(v) {
     return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
@@ -92,6 +94,12 @@ function loadConfig(overrides = {}) {
             extraKeys: [],
             maxStringLength: envInt(env.LOG_MAX_STRING_LENGTH, 500, { min: 0 }),
             maxStackLength: envInt(env.LOG_MAX_STACK_LENGTH, 4096, { min: 0 }),
+        },
+
+        retention: {
+            enabled: envBool(env.LOG_RETENTION_ENABLED, true),
+            days: envInt(env.LOG_RETENTION_DAYS, 14, { min: 1 }),
+            file: env.LOG_RETENTION_FILE || path.join(process.cwd(), 'data', 'log-retention.json'),
         },
 
         dedup: {

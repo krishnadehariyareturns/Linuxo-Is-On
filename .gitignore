@@ -3,3 +3,7 @@ node_modules/
 *.log
 *.zip
 .DS_Store
+
+# Runtime-only retention index (contains Discord message IDs)
+data/log-retention.json
+data/log-retention.json.tmp

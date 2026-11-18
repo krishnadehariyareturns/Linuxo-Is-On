@@ -55,7 +55,14 @@ test('does NOT over-redact legitimate non-secret keys like author or authorId', 
         durationMs: 42,
     };
     const out = redact(input);
-    assert.deepEqual(out, input);
+    assert.deepEqual({ ...out, guildId: input.guildId }, input);
+    assert.equal(out.guildId, '[REDACTED]');
+});
+
+test('redacts Discord identifiers and common personal data fields', () => {
+    const out = redact({ userId: '123456789', userTag: 'person#1234', guildId: '987654321', channelId: '111222333', email: 'person@example.test', ipAddress: '192.0.2.10', messageContent: 'private chat' });
+    for (const key of ['userId', 'userTag', 'guildId', 'channelId', 'email', 'ipAddress', 'messageContent']) assert.equal(out[key], '[REDACTED]');
+    assert.equal(scrubString('Contact person@example.test from 192.0.2.10'), 'Contact [REDACTED] from [REDACTED]');
 });
 
 test('redacts nested keys and array elements recursively', () => {
