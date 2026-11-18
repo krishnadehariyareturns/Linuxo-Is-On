@@ -55,7 +55,7 @@ const VALUE_SCRUBBERS = [
         replacement: `$1:${REDACTED}@`,
     },
     // Common personal identifiers embedded in otherwise free-form text.
-    { pattern: /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, replacement: REDACTED },
+    { pattern: /(?<!\[)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, replacement: REDACTED },
     { pattern: /\b(?:\d{1,3}\.){3}\d{1,3}\b/g, replacement: REDACTED },
     // Sensitive URL query parameters (?token=..., &api_key=..., etc.)
     {
