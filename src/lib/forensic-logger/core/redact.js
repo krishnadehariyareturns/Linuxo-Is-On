@@ -23,6 +23,11 @@ const DEFAULT_SENSITIVE_KEYS = [
     'private_key',
     'client_secret',
     'webhook_url',
+    // Discord/account identifiers and user-supplied personal data.
+    'user_id', 'user_tag', 'guild_id', 'guild_name', 'channel_id', 'interaction_id',
+    'message_id', 'member_id', 'display_name', 'email', 'phone', 'phone_number',
+    'ip_address', 'ip', 'street_address', 'postal_address', 'message_content',
+    'attachment_url', 'avatar_url',
     'credential',
     'credentials',
 ];
@@ -34,6 +39,9 @@ const DEFAULT_MAX_STACK_LENGTH = 4096;
 // Value-level secret scrubbers applied in order to every string (including
 // Error.message, Error.stack, URLs, and free-form log lines) BEFORE truncation.
 const VALUE_SCRUBBERS = [
+    // Common personal identifiers embedded in otherwise free-form text.
+    { pattern: /\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b/gi, replacement: REDACTED },
+    { pattern: /\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b/g, replacement: REDACTED },
     // PEM-encoded private keys
     {
         pattern: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
