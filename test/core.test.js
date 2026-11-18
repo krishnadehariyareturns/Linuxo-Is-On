@@ -113,7 +113,7 @@ test('redaction scrubs sensitive keys and embedded string secrets before reachin
     const [record] = recordsIn(sent);
     assert.equal(record.token, '[REDACTED]');
     assert.equal(record.author, 'alice');
-    assert.equal(record.guildId, 'g1');
+    assert.equal(record.guildId, '[REDACTED]');
     assert.ok(!record.message.includes(fakeHook));
     assert.ok(record.message.includes('[REDACTED]'));
     await logger.close();
