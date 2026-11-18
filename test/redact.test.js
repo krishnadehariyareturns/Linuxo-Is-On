@@ -55,7 +55,8 @@ test('does NOT over-redact legitimate non-secret keys like author or authorId', 
         durationMs: 42,
     };
     const out = redact(input);
-    assert.deepEqual(out, input);
+    assert.deepEqual({ ...out, guildId: input.guildId }, input);
+    assert.equal(out.guildId, '[REDACTED]');
 });
 
 test('redacts Discord identifiers and common personal data fields', () => {
