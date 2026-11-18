@@ -2,6 +2,9 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { loadConfig } = require('../src/lib/forensic-logger/core/config');
 const {
     createWebhookTransport,
@@ -237,6 +240,27 @@ test('backpressure drops oldest entries and flushAll force-drains all categories
     drainTransport.route(record('warn', 'COMMAND_PERMISSION_DENIED'), {});
     await drainTransport.flushAll({ timeoutMs: 2000 });
     assert.ok(sent.includes('logs') && sent.includes('errors') && sent.includes('security'));
+});
+
+test('deletes expired webhook messages and keeps retryable failures in the retention index', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'linuxo-webhook-retention-'));
+    const filePath = path.join(dir, 'retention.json');
+    const old = Date.now() - 15 * 24 * 60 * 60 * 1000;
+    fs.writeFileSync(filePath, JSON.stringify([{ category: 'logs', id: 'expired-1', createdAt: old }, { category: 'logs', id: 'expired-2', createdAt: old }]));
+    const config = loadConfig({ retention: { enabled: true, days: 14, file: filePath } });
+    const attempts = [];
+    const transport = createWebhookTransport({
+        config,
+        sendFn: async () => {},
+        deleteMessageFn: async (category, id) => { attempts.push(id); if (id === 'expired-2') throw new Error('temporary outage'); },
+    });
+    const result = await transport.cleanupExpiredMessages();
+    assert.equal(result.deleted, 1);
+    assert.equal(result.pending, 1);
+    assert.deepEqual(attempts, ['expired-1', 'expired-2']);
+    const remaining = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    assert.deepEqual(remaining.map((entry) => entry.id), ['expired-2']);
+    fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('backoffDelay and extractRetryAfterMs handle common shapes', () => {
