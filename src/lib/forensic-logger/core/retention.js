@@ -38,14 +38,6 @@ function createRetentionStore({ filePath, retentionDays = 14, now = Date.now } =
         fs.renameSync(tempPath, resolvedPath);
     }
 
-    function pruneExpired() {
-        const cutoff = now() - maxAgeMs;
-        const before = entries.length;
-        entries = entries.filter((entry) => entry.createdAt > cutoff);
-        if (entries.length !== before) save();
-        return before - entries.length;
-    }
-
     function add(category, id, createdAt = now()) {
         if (!category || !id) return;
         entries.push({ category, id: String(id), createdAt });
@@ -68,7 +60,7 @@ function createRetentionStore({ filePath, retentionDays = 14, now = Date.now } =
     }
 
     load();
-    return { add, dueEntries, remove, pruneExpired, snapshot, filePath: resolvedPath };
+    return { add, dueEntries, remove, snapshot, filePath: resolvedPath };
 }
 
 module.exports = { createRetentionStore, DAY_MS };
