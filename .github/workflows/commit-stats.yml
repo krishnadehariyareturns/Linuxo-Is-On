@@ -8,7 +8,6 @@ on:
     branches: [main]
     paths-ignore:
       - "stats/**"
-      - ".github/workflows/commit-stats.yml"
 
 permissions:
   contents: write
