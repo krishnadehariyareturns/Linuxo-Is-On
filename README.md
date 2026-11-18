@@ -51,7 +51,9 @@ Every slash command and button click is wrapped automatically — you don't need
 - `COMMAND_START` / `COMMAND_END` / `COMMAND_ERROR` for every slash command, with duration, guild/user metadata, and (on failure) a normalized error — printed as a report box in dev console, JSON lines to a file, and optionally shipped to Discord webhooks.
 - The same for buttons (`BUTTON_START` / `BUTTON_END` / `BUTTON_ERROR`), with safe ephemeral error feedback on failures.
 - A startup diagnostics report and a shutdown report (on `SIGINT` / `SIGTERM`) with command counts, success/failure totals, p50/p95/p99 latency stats, and accurate post-cleanup shutdown timing.
-- Automatic boundary-aware key redaction and value-level secret scrubbing (tokens, passwords, webhook URLs, API keys, credentials in URLs/messages/stack traces) before anything is logged anywhere.
+- Automatic boundary-aware redaction of credentials, Discord user/guild/channel identifiers, email addresses, IPv4 addresses, and explicitly marked personal-data fields before records reach console, files, or webhooks.
+- Discord webhook log messages are indexed by message ID and automatically deleted after 14 days (hourly cleanup); the index stores no webhook URLs or log contents. Configure `LOG_RETENTION_DAYS` / `LOG_RETENTION_ENABLED` to change or disable this.
+- `LOG_FILE` is an optional host-local append-only sink. Its retention is controlled by the host/operator and must be configured separately; webhook retention does not erase copies retained by Discord, container providers, backups, or external log collectors.
 - Slow-command detection, guild-isolated error deduplication (suppresses duplicate noise on Discord without cross-guild suppression or dropping console/JSON records), transient-only webhook retry with backoff/rate-limit handling and a circuit breaker, instance-scoped context fields, and bounded memory structures throughout.
 
 **Extension points, for when this bot grows:**
