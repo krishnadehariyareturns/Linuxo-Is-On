@@ -4,6 +4,7 @@ const { SECURITY_EVENTS, PERFORMANCE_EVENTS } = require('./eventNames');
 const { isEnabled } = require('./levels');
 const { isRetryable, extractHttpStatus } = require('./errors');
 const { scrubString } = require('./redact');
+const { createRetentionStore } = require('./retention');
 
 const CATEGORIES = ['logs', 'errors', 'security', 'performance', 'debug'];
 
@@ -124,7 +125,13 @@ function createDefaultSender(config) {
     async function send(category, payload) {
         const client = clientFor(category);
         if (!client) throw new Error(`No webhook URL configured for category "${category}"`);
-        await client.send(payload);
+        return client.send({ ...payload, wait: true });
+    }
+
+    async function deleteMessage(category, messageId) {
+        const client = clientFor(category);
+        if (!client) throw new Error('No webhook URL configured for category ' + category);
+        return client.deleteMessage(messageId);
     }
 
     function destroy() {
@@ -138,7 +145,7 @@ function createDefaultSender(config) {
         clients.clear();
     }
 
-    return { send, destroy };
+    return { send, deleteMessage, destroy };
 }
 
 /**
@@ -147,10 +154,14 @@ function createDefaultSender(config) {
  * @param {function} [opts.sendFn] - async (category, {components, flags}) => void. Defaults to a real discord.js WebhookClient sender. Inject a fake for tests.
  * @param {function} [opts.onInternalLog] - (level, message, data) => void. Console-only transport diagnostics.
  * @param {function} [opts.onDeliveryFailure] - (category, records) => void. Called when delivery permanently fails or exhausts retries.
+ * @param {function} [opts.deleteMessageFn] - Test seam for deleting an expired webhook message.
  */
-function createWebhookTransport({ config, sendFn, onInternalLog, onDeliveryFailure } = {}) {
+function createWebhookTransport({ config, sendFn, onInternalLog, onDeliveryFailure, deleteMessageFn } = {}) {
     const defaultSender = sendFn ? null : createDefaultSender(config);
     const send = sendFn || defaultSender.send;
+    const retention = config.retention?.enabled
+        ? createRetentionStore({ filePath: config.retention.file, retentionDays: config.retention.days })
+        : null;
     const log = onInternalLog || (() => {});
     const deliveryFailure = onDeliveryFailure || (() => {});
 
@@ -224,7 +235,8 @@ function createWebhookTransport({ config, sendFn, onInternalLog, onDeliveryFailu
         while (attempt <= maxRetries) {
             try {
                 // eslint-disable-next-line no-await-in-loop
-                await send(category, { components: jobs.map((j) => j.component), flags: IS_COMPONENTS_V2 });
+                const sent = await send(category, { components: jobs.map((j) => j.component), flags: IS_COMPONENTS_V2 });
+                if (retention && sent?.id) retention.add(category, sent.id);
                 s.consecutiveFailures = 0;
                 if (s.circuitOpenUntil) {
                     s.circuitOpenUntil = 0;
@@ -320,9 +332,33 @@ function createWebhookTransport({ config, sendFn, onInternalLog, onDeliveryFailu
         }
     }
 
-    /** Called on an interval by core.js to drive normal batching. */
+    let lastRetentionSweep = 0;
+    async function cleanupExpiredMessages() {
+        if (!retention) return { deleted: 0, pending: 0 };
+        let deleted = 0;
+        for (const entry of retention.dueEntries()) {
+            try {
+                if (deleteMessageFn) await deleteMessageFn(entry.category, entry.id);
+                else if (defaultSender) await defaultSender.deleteMessage(entry.category, entry.id);
+                else break;
+                retention.remove(entry);
+                deleted++;
+            } catch (err) {
+                const code = err?.code ?? err?.rawError?.code;
+                if (code === 10008) { retention.remove(entry); deleted++; }
+                else log('warn', 'could not delete an expired webhook log message; will retry later', { category: entry.category, code, error: safeErrorMessage(err) });
+            }
+        }
+        return { deleted, pending: retention.dueEntries().length };
+    }
+
+    /** Called on an interval by core.js to drive normal batching and retention. */
     async function tick() {
         await Promise.all(CATEGORIES.map((cat) => flush(cat)));
+        if (retention && Date.now() - lastRetentionSweep >= 60 * 60 * 1000) {
+            lastRetentionSweep = Date.now();
+            await cleanupExpiredMessages();
+        }
     }
 
     /** Best-effort drain of everything queued and in-flight, bounded by timeoutMs. */
@@ -365,7 +401,7 @@ function createWebhookTransport({ config, sendFn, onInternalLog, onDeliveryFailu
         return out;
     }
 
-    return { route, tick, flush, flushAll, destroy, getStats, CATEGORIES };
+    return { route, tick, flush, flushAll, cleanupExpiredMessages, destroy, getStats, CATEGORIES };
 }
 
 module.exports = {
