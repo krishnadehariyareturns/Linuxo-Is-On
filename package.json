@@ -1,17 +1,19 @@
 {
-  "name": "linuxo-bot",
-  "version": "0.2.0",
-  "description": "Linuxo — a penguin/terminal-themed Discord bot",
-  "main": "src/index.js",
-  "engines": {
-    "node": ">=18.0.0"
-  },
-  "scripts": {
-    "start": "node src/index.js",
-    "test": "node --test"
-  },
-  "dependencies": {
-    "discord.js": "^14.19.0",
-    "dotenv": "^16.4.5"
-  }
+"name": "linuxo-discord",
+"version": "0.6.7",
+"description": "Linuxo — a penguin/terminal-themed Discord bot",
+"main": "src/index.js",
+"engines": {
+"node": ">=18.0.0"
+},
+"scripts": {
+"start": "node src/index.js",
+"test": "node --test",
+"logo": "bash logo.sh",
+"prestart": "npm run logo"
+},
+"dependencies": {
+"discord.js": "^14.19.0",
+"dotenv": "^16.4.5"
+}
 }
