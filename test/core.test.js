@@ -201,6 +201,38 @@ test('button() wraps a component handler with its own lifecycle events', async (
     await logger.close();
 });
 
+test('task() failures reach the configured errors webhook', async () => {
+    const { logger, sent } = makeLogger({
+        webhook: {
+            categories: {
+                logs: '',
+                errors: 'https://example.com/errors',
+                security: '',
+                performance: '',
+                debug: '',
+            },
+        },
+    });
+    const originalError = new Error('database unavailable');
+
+    await assert.rejects(
+        logger.task({
+            event: Events.DATABASE_QUERY,
+            errorEvent: Events.DATABASE_ERROR,
+            context: {},
+            handler: async () => { throw originalError; },
+        }),
+        (err) => err === originalError,
+    );
+
+    await logger.flushAll({ timeoutMs: 1000 });
+    const failure = recordsIn(sent).find((record) => record.event === Events.DATABASE_ERROR);
+    assert.ok(failure, 'expected task failure to be delivered to the errors webhook');
+    assert.equal(failure.category, 'errors');
+    assert.equal(failure.level, 'error');
+    await logger.close();
+});
+
 test('contextFor(interaction) exposes a mutable metrics object that flows into COMMAND_END', async () => {
     const { logger, sent } = makeLogger();
     const fakeInteraction = {};
