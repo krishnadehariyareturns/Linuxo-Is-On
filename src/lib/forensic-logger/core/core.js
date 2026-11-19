@@ -366,7 +366,7 @@ function createLogger(overrides = {}) {
             return result;
         } catch (err) {
             const durationMs = elapsedMs(t);
-            _emit('warn', errorEvent, { ...taskCtx, durationMs }, { status: 'failure', error: err, category: 'errors' });
+            _emit('error', errorEvent, { ...taskCtx, durationMs }, { status: 'failure', error: err, category: 'errors' });
             throw err;
         }
     }
