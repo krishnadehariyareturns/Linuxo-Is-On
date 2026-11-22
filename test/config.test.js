@@ -4,12 +4,26 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loadConfig, deepMerge, thresholdsFor } = require('../src/lib/forensic-logger/core/config');
 
-test('loadConfig returns sane defaults with no overrides and no investigate/AI config', () => {
+test('privacy-first defaults disable webhook delivery and memory sampling', () => {
+    const c = loadConfig();
+    assert.equal(c.webhook.enabled, false);
+    assert.equal(c.performance.includeMemory, false);
+    assert.equal(c.performance.summaryIntervalMs, 0);
+    assert.equal(c.file, null);
+    assert.equal(c.console, true);
+});
+
+test('redaction is always enabled, even when an override attempts to disable it', () => {
+    const c = loadConfig({ redaction: { enabled: false } });
+    assert.equal(c.redaction.enabled, true);
+});
+
+test('loadConfig returns expected logger defaults and no AI config', () => {
     const c = loadConfig();
     assert.equal(typeof c.level, 'string');
     assert.equal(c.webhook.batchSize, 10);
     assert.equal(c.redaction.enabled, true);
-    assert.equal(c.redaction.maxStackLength, 4096);
+    assert.equal(c.redaction.maxStringLength, 500);
     assert.equal(c.forensics, undefined);
     assert.equal(c.ai, undefined);
 });

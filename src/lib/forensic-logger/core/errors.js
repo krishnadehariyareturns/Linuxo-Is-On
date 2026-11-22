@@ -61,7 +61,6 @@ function normalizeError(err) {
             code: undefined,
             httpStatus: undefined,
             retryable: false,
-            stack: undefined,
         };
     }
 
@@ -74,7 +73,6 @@ function normalizeError(err) {
         code,
         httpStatus,
         retryable: isRetryable(err, httpStatus),
-        stack: err.stack,
     };
 }
 
@@ -110,18 +108,15 @@ function firstStackFrame(stack) {
 }
 
 /**
- * A short stable hash used to group repeats of the same failure for webhook
- * deduplication. Includes `guildId` so an error in one guild never suppresses
- * error alerts originating from a different guild.
+ * A short stable hash used to group repeats by error type/code and command/event.
+ * It deliberately excludes Discord identifiers and stack paths.
  */
 function fingerprint(normalized, context = {}) {
     if (!normalized) return 'unknown';
     const basis = [
-        context.guildId ?? '',
         normalized.name,
         normalized.code ?? '',
-        context.command ?? context.customId ?? context.event ?? '',
-        firstStackFrame(normalized.stack),
+        context.command ?? context.event ?? '',
     ].join('|');
     return crypto.createHash('sha1').update(basis).digest('hex').slice(0, 10);
 }

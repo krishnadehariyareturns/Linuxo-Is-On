@@ -9,7 +9,7 @@ test('normalizes a plain Error', () => {
     assert.equal(out.name, 'Error');
     assert.equal(out.message, 'boom');
     assert.equal(out.code, undefined);
-    assert.ok(out.stack.includes('Error: boom'));
+    assert.equal(out.stack, undefined, 'stack traces are not retained in log records');
 });
 
 test('normalizes a DiscordAPIError-shaped error (status + code)', () => {
@@ -84,7 +84,7 @@ test('safeSummary never includes the stack and caps length', () => {
     assert.ok(long.length <= 51);
 });
 
-test('fingerprint is stable within the same guild/command and isolated across guilds', () => {
+test('fingerprint deduplicates the same error by command without retaining guild identity', () => {
     function makeErr() {
         try {
             throw new Error('same failure');
@@ -98,7 +98,7 @@ test('fingerprint is stable within the same guild/command and isolated across gu
     const c1 = fingerprint(normalizeError(makeErr()), { command: 'other', guildId: 'guild-1' });
 
     assert.equal(a1, a2);
-    assert.notEqual(a1, b1, 'different guilds must not collide in error fingerprint');
-    assert.notEqual(a1, c1, 'different commands must not collide in error fingerprint');
+    assert.equal(a1, b1, 'guild identity is intentionally excluded from fingerprints');
+    assert.notEqual(a1, c1, 'different commands remain distinguishable');
     assert.equal(fingerprint(null, {}), 'unknown');
 });

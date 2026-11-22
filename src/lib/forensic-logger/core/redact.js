@@ -57,6 +57,8 @@ const VALUE_SCRUBBERS = [
     // Common personal identifiers embedded in otherwise free-form text.
     { pattern: /(?<!\[)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, replacement: REDACTED },
     { pattern: /\b(?:\d{1,3}\.){3}\d{1,3}\b/g, replacement: REDACTED },
+    // Discord snowflakes and other long numeric identifiers in free-form errors.
+    { pattern: /\b\d{17,20}\b/g, replacement: REDACTED },
     // Sensitive URL query parameters (?token=..., &api_key=..., etc.)
     {
         pattern: /([?&](?:access_token|refresh_token|id_token|bot_token|auth_token|token|api_key|apikey|client_secret|secret_key|secret|password|passwd|auth)=)[^&#\s"'<>)\]]+/gi,

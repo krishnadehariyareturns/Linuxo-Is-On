@@ -44,17 +44,13 @@ test('buildStartupReport reports DEGRADED when any health check fails', () => {
     assert.ok(report.text.includes('timeout'));
 });
 
-test('buildStartupReport reads shard id from client.shard or configured shardId', () => {
+test('buildStartupReport omits unnecessary shard identity', () => {
     const config = loadConfig({ botVersion: '1.0.0' });
     const report = buildStartupReport({
         config, client: { shard: { ids: [3] } }, commandsLoaded: 1, eventsLoaded: 1, webhooksConfigured: 0, startupDurationMs: 100,
     });
-    assert.equal(report.structured.shardId, 3);
-
-    const fallbackReport = buildStartupReport({
-        config, client: {}, shardId: 5, commandsLoaded: 1, eventsLoaded: 1, webhooksConfigured: 0, startupDurationMs: 100,
-    });
-    assert.equal(fallbackReport.structured.shardId, 5);
+    assert.equal(report.structured.shardId, undefined);
+    assert.ok(!report.text.includes('Shard'));
 });
 
 test('buildShutdownReport summarizes stats and pending queue depth', () => {

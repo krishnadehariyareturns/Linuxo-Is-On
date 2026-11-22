@@ -241,19 +241,19 @@ function startBot() {
 
     client.once(DiscordEvents.ClientReady, async () => {
         client.user.setActivity('ls', { type: ActivityType.Listening });
-        logger.info(Events.BOT_READY, logger.fromInteraction(null, { userTag: client.user.tag }));
+        logger.info(Events.BOT_READY, logger.fromInteraction(null));
 
         const commandsData = client.commands.map((cmd) => cmd.data.toJSON());
         try {
             if (process.env.GUILD_ID) {
                 const guild = await client.guilds.fetch(process.env.GUILD_ID);
                 await guild.commands.set(commandsData);
-                logger.info('COMMAND_REGISTER', logger.fromInteraction(null, { guildId: guild.id, guildName: guild.name, count: commandsData.length }), {
-                    message: `Registered ${commandsData.length} command(s) to guild ${guild.name}`,
+                logger.info('COMMAND_REGISTER', logger.fromInteraction(null), {
+                    message: `Registered ${commandsData.length} command(s)`,
                 });
             } else {
                 await client.application.commands.set(commandsData);
-                logger.info('COMMAND_REGISTER', logger.fromInteraction(null, { count: commandsData.length }), {
+                logger.info('COMMAND_REGISTER', logger.fromInteraction(null), {
                     message: `Registered ${commandsData.length} command(s) globally`,
                 });
             }
@@ -277,16 +277,13 @@ function startBot() {
 
     // ---- gateway / shard telemetry (all fire under Guilds-only intent) ----
     on('error', (err) => logger.error(Events.GATEWAY_ERROR, logger.fromInteraction(null, {}), err));
-    on('warn', (info) => logger.warn(Events.GATEWAY_ERROR, logger.fromInteraction(null, {}), { message: info }));
-    on('shardError', (err, shardId) => logger.error(Events.SHARD_ERROR, logger.fromInteraction(null, { shardId }), err));
-    on('shardReady', (shardId) => logger.info(Events.SHARD_READY, logger.fromInteraction(null, { shardId })));
-    on('shardReconnecting', (shardId) => logger.warn(Events.GATEWAY_RECONNECT, logger.fromInteraction(null, { shardId })));
-    on('shardDisconnect', (event, shardId) => logger.warn(Events.GATEWAY_DISCONNECT, logger.fromInteraction(null, { shardId, code: event?.code })));
-    on('guildCreate', (guild) => logger.info(Events.GUILD_JOIN, logger.fromInteraction(null, { guildId: guild.id, guildName: guild.name })));
-    on('guildDelete', (guild) => {
-        stopGuildCommandTimers(client, guild.id);
-        logger.info(Events.GUILD_LEAVE, logger.fromInteraction(null, { guildId: guild.id, guildName: guild.name }));
-    });
+    on('warn', () => logger.warn(Events.GATEWAY_ERROR, logger.fromInteraction(null, {}), { message: 'Discord gateway warning' }));
+    on('shardError', (err) => logger.error(Events.SHARD_ERROR, logger.fromInteraction(null, {}), err));
+    on('shardReady', () => logger.info(Events.SHARD_READY, logger.fromInteraction(null, {})));
+    on('shardReconnecting', () => logger.warn(Events.GATEWAY_RECONNECT, logger.fromInteraction(null, {})));
+    on('shardDisconnect', (event) => logger.warn(Events.GATEWAY_DISCONNECT, logger.fromInteraction(null, { code: event?.code })));
+    // Guild IDs are used only transiently to clean up that guild's panel timers.
+    on('guildDelete', (guild) => stopGuildCommandTimers(client, guild.id));
 
     // ---- process-level safety net ----
     const gracefulShutdown = createGracefulShutdown({ client, logger });

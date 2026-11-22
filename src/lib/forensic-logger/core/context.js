@@ -2,13 +2,10 @@
 
 const os = require('node:os');
 
-function buildStaticFields({ botVersion, shardId = 0 } = {}) {
+function buildStaticFields({ botVersion } = {}) {
     return Object.freeze({
         botVersion: botVersion || 'unknown',
         nodeVersion: process.version,
-        pid: process.pid,
-        hostname: os.hostname(),
-        shardId,
     });
 }
 
@@ -48,20 +45,12 @@ function createContextFactory({ botVersion, shardId = 0 } = {}) {
     function fromInteraction(interaction, overrides = {}) {
         if (!interaction) return createContext(overrides);
 
-        const fields = {
-            guildId: interaction.guildId ?? undefined,
-            guildName: interaction.guild?.name ?? undefined,
-            channelId: interaction.channelId ?? undefined,
-            userId: interaction.user?.id ?? undefined,
-            userTag: interaction.user?.tag ?? undefined,
-            interactionId: interaction.id ?? undefined,
-        };
-
+        // Only command names are retained for diagnostics. Discord identifiers
+        // remain on the live interaction object for authorization and cleanup.
+        const fields = {};
         if (typeof interaction.isChatInputCommand === 'function' && interaction.isChatInputCommand()) {
             fields.command = interaction.commandName;
             fields.subcommand = interaction.options?.getSubcommand?.(false) ?? undefined;
-        } else if (typeof interaction.isButton === 'function' && interaction.isButton()) {
-            fields.customId = interaction.customId;
         }
 
         return createContext({ ...fields, ...overrides });

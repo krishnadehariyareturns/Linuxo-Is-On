@@ -9,114 +9,82 @@ const {
     fromInteraction,
 } = require('../src/lib/forensic-logger/core/context');
 
-test('createContextFactory creates isolated instance-scoped static fields', () => {
-    const factoryA = createContextFactory({ botVersion: '1.0.0', shardId: 2 });
-    const factoryB = createContextFactory({ botVersion: '2.5.0', shardId: 7 });
-
-    const ctxA = factoryA.createContext({ guildId: 'g1' });
-    const ctxB = factoryB.createContext({ guildId: 'g2' });
-
-    assert.equal(ctxA.botVersion, '1.0.0');
-    assert.equal(ctxA.shardId, 2);
-    assert.equal(ctxA.guildId, 'g1');
-
-    assert.equal(ctxB.botVersion, '2.5.0');
-    assert.equal(ctxB.shardId, 7);
-    assert.equal(ctxB.guildId, 'g2');
-
-    // Re-creating via factoryA after factoryB still retains factoryA's own metadata.
-    const ctxA2 = factoryA.fromInteraction(null);
-    assert.equal(ctxA2.botVersion, '1.0.0');
-    assert.equal(ctxA2.shardId, 2);
+test('static context contains only bot and runtime versions', () => {
+    const factory = createContextFactory({ botVersion: '1.0.0', shardId: 2 });
+    const ctx = factory.createContext();
+    assert.equal(ctx.botVersion, '1.0.0');
+    assert.equal(ctx.nodeVersion, process.version);
+    assert.equal(ctx.pid, undefined);
+    assert.equal(ctx.hostname, undefined);
+    assert.equal(ctx.shardId, undefined);
 });
 
-test('contexts never generate traceId, requestId, parentRequestId, or logId', () => {
-    const factory = createContextFactory({ botVersion: '1.0.0', shardId: 0 });
-    const ctx = factory.createContext({ command: 'startup' });
-    const child = factory.childContext(ctx, { event: 'DATABASE_QUERY' });
-
-    for (const obj of [ctx, child, createContext({}), fromInteraction(null)]) {
+test('contexts never generate correlation or host identifiers', () => {
+    const ctx = createContext({ command: 'startup' });
+    const child = childContext(ctx, { event: 'DATABASE_QUERY' });
+    for (const obj of [ctx, child, fromInteraction(null)]) {
         assert.equal(obj.traceId, undefined);
         assert.equal(obj.requestId, undefined);
         assert.equal(obj.parentRequestId, undefined);
         assert.equal(obj.logId, undefined);
+        assert.equal(obj.pid, undefined);
+        assert.equal(obj.hostname, undefined);
     }
 });
 
-test('createContext merges overrides on top of base fields', () => {
-    const ctx = createContext({ guildId: 'g1', command: 'startup' });
-    assert.equal(ctx.guildId, 'g1');
+test('createContext merges caller-provided non-sensitive fields', () => {
+    const ctx = createContext({ command: 'startup' });
     assert.equal(ctx.command, 'startup');
     assert.equal(ctx.nodeVersion, process.version);
 });
 
 test('childContext inherits parent fields and merges child overrides', () => {
-    const factory = createContextFactory({ botVersion: '1.2.3', shardId: 1 });
-    const parent = factory.createContext({ command: 'startup', guildId: 'g1' });
+    const factory = createContextFactory({ botVersion: '1.2.3' });
+    const parent = factory.createContext({ command: 'startup' });
     const child = factory.childContext(parent, { event: 'DATABASE_QUERY' });
     assert.equal(child.command, 'startup');
-    assert.equal(child.guildId, 'g1');
     assert.equal(child.botVersion, '1.2.3');
-    assert.equal(child.shardId, 1);
     assert.equal(child.event, 'DATABASE_QUERY');
 });
 
-test('fromInteraction extracts guild/channel/user/command fields', () => {
+test('fromInteraction records only the command name and subcommand', () => {
     const fakeInteraction = {
-        guildId: 'g1',
-        guild: { name: 'Test Guild' },
-        channelId: 'c1',
-        user: { id: 'u1', tag: 'user#0001' },
-        id: 'i1',
+        guildId: 'guild-sensitive',
+        guild: { name: 'Private Server Name' },
+        channelId: 'channel-sensitive',
+        user: { id: 'user-sensitive', tag: 'private-tag#0001' },
+        id: 'interaction-sensitive',
         commandName: 'startup',
         isChatInputCommand: () => true,
         isButton: () => false,
-        options: { getSubcommand: () => null },
+        options: { getSubcommand: () => 'status' },
     };
     const ctx = fromInteraction(fakeInteraction);
-    assert.equal(ctx.guildId, 'g1');
-    assert.equal(ctx.guildName, 'Test Guild');
-    assert.equal(ctx.channelId, 'c1');
-    assert.equal(ctx.userId, 'u1');
-    assert.equal(ctx.userTag, 'user#0001');
-    assert.equal(ctx.interactionId, 'i1');
     assert.equal(ctx.command, 'startup');
+    assert.equal(ctx.subcommand, 'status');
+    for (const key of ['guildId', 'guildName', 'channelId', 'userId', 'userTag', 'interactionId']) {
+        assert.equal(ctx[key], undefined, `${key} must not enter log context`);
+    }
 });
 
-test('fromInteraction handles DM interactions with null guildId', () => {
+test('button interactions do not expose identifiers or custom IDs in log context', () => {
     const fakeInteraction = {
-        guildId: null,
-        guild: null,
-        channelId: 'c1',
-        user: { id: 'u1', tag: 'user#0001' },
-        id: 'i1',
-        commandName: 'startup',
-        isChatInputCommand: () => true,
-        isButton: () => false,
-        options: { getSubcommand: () => null },
-    };
-    const ctx = fromInteraction(fakeInteraction);
-    assert.equal(ctx.guildId, undefined);
-    assert.equal(ctx.guildName, undefined);
-});
-
-test('fromInteraction extracts customId for button interactions', () => {
-    const fakeInteraction = {
-        guildId: 'g1',
-        channelId: 'c1',
-        user: { id: 'u1', tag: 'user#0001' },
-        id: 'i1',
-        customId: 'my_button',
+        guildId: 'guild-sensitive',
+        channelId: 'channel-sensitive',
+        user: { id: 'user-sensitive', tag: 'private-tag#0001' },
+        id: 'interaction-sensitive',
+        customId: 'private-custom-id',
         isChatInputCommand: () => false,
         isButton: () => true,
     };
     const ctx = fromInteraction(fakeInteraction);
-    assert.equal(ctx.customId, 'my_button');
-    assert.equal(ctx.command, undefined);
+    for (const key of ['guildId', 'channelId', 'userId', 'userTag', 'interactionId', 'customId', 'command']) {
+        assert.equal(ctx[key], undefined);
+    }
 });
 
 test('fromInteraction handles a missing interaction gracefully', () => {
     const ctx = fromInteraction(null);
     assert.equal(ctx.nodeVersion, process.version);
-    assert.equal(ctx.pid, process.pid);
+    assert.equal(ctx.pid, undefined);
 });

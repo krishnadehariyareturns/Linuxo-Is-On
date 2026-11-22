@@ -51,7 +51,7 @@ function loadConfig(overrides = {}) {
         file: env.LOG_FILE || null,
 
         webhook: {
-            enabled: envBool(env.LOG_WEBHOOK_ENABLED, true),
+            enabled: envBool(env.LOG_WEBHOOK_ENABLED, false),
             batchSize: envInt(env.LOG_WEBHOOK_BATCH_SIZE, 10, { min: 1 }),
             flushIntervalMs: envInt(env.LOG_WEBHOOK_FLUSH_MS, 1000, { min: 0 }),
             retryLimit: envInt(env.LOG_WEBHOOK_RETRY_LIMIT, 5, { min: 0 }),
@@ -81,7 +81,7 @@ function loadConfig(overrides = {}) {
         performance: {
             slowCommandMs: envInt(env.LOG_SLOW_COMMAND_MS, 1000, { min: 1 }),
             warnCommandMs: envInt(env.LOG_WARN_COMMAND_MS, 500, { min: 1 }),
-            includeMemory: envBool(env.LOG_INCLUDE_MEMORY, true),
+            includeMemory: envBool(env.LOG_INCLUDE_MEMORY, false),
             memorySampleIntervalMs: envInt(env.LOG_MEMORY_SAMPLE_MS, 5 * 60_000, { min: 1000 }),
             // 0 disables the periodic rollup summary.
             summaryIntervalMs: envInt(env.LOG_SUMMARY_INTERVAL_MS, 0, { min: 0 }),
@@ -90,7 +90,7 @@ function loadConfig(overrides = {}) {
         },
 
         redaction: {
-            enabled: envBool(env.LOG_REDACTION_ENABLED, true),
+            enabled: true,
             extraKeys: [],
             maxStringLength: envInt(env.LOG_MAX_STRING_LENGTH, 500, { min: 0 }),
             maxStackLength: envInt(env.LOG_MAX_STACK_LENGTH, 4096, { min: 0 }),
@@ -111,7 +111,10 @@ function loadConfig(overrides = {}) {
         statsMaxCommands: envInt(env.LOG_STATS_MAX_COMMANDS, 200, { min: 1 }),
     };
 
-    return deepMerge(defaults, overrides);
+    const config = deepMerge(defaults, overrides);
+    // Redaction is mandatory: neither environment variables nor code overrides may disable it.
+    config.redaction.enabled = true;
+    return config;
 }
 
 /** Per-command duration thresholds, falling back to the global defaults. */

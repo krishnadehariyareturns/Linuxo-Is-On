@@ -62,7 +62,7 @@ test('logger package exposes no investigate, forensics, or AI summarizer surface
     logger.stopBackgroundTasks();
 });
 
-test('two logger instances preserve independent botVersion and shardId metadata', async () => {
+test('two logger instances preserve independent botVersion metadata only', async () => {
     const a = makeLogger({ botVersion: '1.0.0', shardId: 0 });
     const b = makeLogger({ botVersion: '2.0.0', shardId: 3 });
 
@@ -74,9 +74,9 @@ test('two logger instances preserve independent botVersion and shardId metadata'
     const [recA] = recordsIn(a.sent);
     const [recB] = recordsIn(b.sent);
     assert.equal(recA.botVersion, '1.0.0');
-    assert.equal(recA.shardId, 0);
+    assert.equal(recA.shardId, undefined);
     assert.equal(recB.botVersion, '2.0.0');
-    assert.equal(recB.shardId, 3);
+    assert.equal(recB.shardId, undefined);
     assert.equal(recA.traceId, undefined);
     assert.equal(recA.requestId, undefined);
 
@@ -106,16 +106,29 @@ test('redaction scrubs sensitive keys and embedded string secrets before reachin
         author: 'alice',
         guildId: 'g1',
     }, {
-        message: `Webhook failed at ${fakeHook}`,
+        message: `Webhook failed at ${fakeHook} for interaction 987654321098765432`,
     });
     await logger.flushAll({ timeoutMs: 1000 });
 
     const [record] = recordsIn(sent);
     assert.equal(record.token, '[REDACTED]');
     assert.equal(record.author, 'alice');
-    assert.equal(record.guildId, '[REDACTED]');
+    assert.equal(record.guildId, undefined, 'unneeded identity fields are omitted entirely');
     assert.ok(!record.message.includes(fakeHook));
     assert.ok(record.message.includes('[REDACTED]'));
+    assert.ok(!record.message.includes('987654321098765432'));
+    await logger.close();
+});
+
+test('runtime redaction cannot be disabled by mutating logger config', async () => {
+    const { logger, sent } = makeLogger({ redaction: { enabled: false } });
+    logger.config.redaction.enabled = false;
+    logger.info('PRIVACY_CHECK', { token: 'never-log-this', userId: 'user-secret' });
+    await logger.flushAll({ timeoutMs: 1000 });
+
+    const [record] = recordsIn(sent);
+    assert.equal(record.token, '[REDACTED]');
+    assert.equal(record.userId, undefined);
     await logger.close();
 });
 
@@ -253,7 +266,7 @@ test('contextFor(interaction) exposes a mutable metrics object that flows into C
     await logger.close();
 });
 
-test('error dedup suppresses duplicates in the same guild without cross-guild suppression', async () => {
+test('error dedup avoids guild-specific tracking and suppresses repeated command errors globally', async () => {
     const { logger, sent } = makeLogger({ dedup: { windowMs: 60_000 } });
     const err = new Error('recurring failure');
 
@@ -263,8 +276,9 @@ test('error dedup suppresses duplicates in the same guild without cross-guild su
     await logger.flushAll({ timeoutMs: 1000 });
 
     const errorRecords = recordsIn(sent).filter((r) => r.category === 'errors');
-    assert.equal(errorRecords.length, 2, 'guild-a duplicate suppressed, guild-b still delivered');
-    assert.deepEqual(errorRecords.map((r) => r.guildId), ['[REDACTED]', '[REDACTED]']);
+    assert.equal(errorRecords.length, 1, 'the same command error is deduplicated without guild identity');
+    assert.ok(!JSON.stringify(errorRecords).includes('guild-a'));
+    assert.ok(!JSON.stringify(errorRecords).includes('guild-b'));
     await logger.close();
 });
 
@@ -333,7 +347,7 @@ test('close() drains and closes the JSON log file stream with final shutdown rec
     }
 });
 
-test('buildLogComponent omits investigate footer hints, traceId, and requestId, and shows guildId fallback', () => {
+test('buildLogComponent omits identity fields, traceId, and requestId', () => {
     const container = buildLogComponent({
         level: 'info',
         event: 'COMMAND_END',
@@ -353,6 +367,6 @@ test('buildLogComponent omits investigate footer hints, traceId, and requestId, 
     assert.ok(!serialized.includes('Trace ID'));
     assert.ok(!serialized.includes('should-not-appear'));
     assert.ok(!serialized.includes('req:'));
-    assert.ok(serialized.includes('999888777'));
-    assert.ok(serialized.includes('111222333'));
+    assert.ok(!serialized.includes('999888777'));
+    assert.ok(!serialized.includes('111222333'));
 });

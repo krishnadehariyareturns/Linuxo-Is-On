@@ -5,7 +5,7 @@ const path = require('node:path');
 const { monitorEventLoopDelay } = require('node:perf_hooks');
 
 const { loadConfig, thresholdsFor } = require('./config');
-const { isEnabled, colorize, DIM, BOLD, RESET } = require('./levels');
+const { isEnabled, colorize, BOLD, RESET } = require('./levels');
 const { Events } = require('./eventNames');
 const { createContextFactory } = require('./context');
 const { startTimer, elapsedMs } = require('./timer');
@@ -31,10 +31,10 @@ const BOX_EVENTS = new Set([
     Events.BUTTON_ERROR,
 ]);
 
-function defaultHandlerName(name) {
-    const clean = String(name).replace(/[^a-zA-Z0-9]/g, '');
-    return `${clean.charAt(0).toUpperCase()}${clean.slice(1)}Command`;
-}
+const OMITTED_CONTEXT_FIELDS = [
+    'userId', 'userTag', 'guildId', 'guildName', 'channelId', 'interactionId',
+    'messageId', 'memberId', 'customId', 'hostname', 'pid', 'shardId',
+];
 
 function humanizeMessage(event, context, { status, error } = {}) {
     switch (event) {
@@ -45,11 +45,11 @@ function humanizeMessage(event, context, { status, error } = {}) {
         case Events.COMMAND_ERROR:
             return `Command /${context.command} failed: ${error ? safeSummary(error) : 'unknown error'}`;
         case Events.BUTTON_START:
-            return `Button "${context.customId}" pressed`;
+            return 'Button interaction started';
         case Events.BUTTON_END:
-            return `Button "${context.customId}" handled in ${Math.round(context.durationMs || 0)}ms`;
+            return `Button interaction completed in ${Math.round(context.durationMs || 0)}ms`;
         case Events.BUTTON_ERROR:
-            return `Button "${context.customId}" failed: ${error ? safeSummary(error) : 'unknown error'}`;
+            return `Button interaction failed: ${error ? safeSummary(error) : 'unknown error'}`;
         case Events.BOT_READY:
             return 'Bot is ready';
         case Events.BOT_SHUTDOWN:
@@ -59,14 +59,6 @@ function humanizeMessage(event, context, { status, error } = {}) {
         default:
             return event.replace(/_/g, ' ').toLowerCase();
     }
-}
-
-function compactContext(record) {
-    const bits = [];
-    for (const k of ['guildId', 'channelId', 'userId']) {
-        if (record[k] !== undefined) bits.push(`${k}=${record[k]}`);
-    }
-    return bits.join(' ');
 }
 
 /**
@@ -128,12 +120,12 @@ function closeWriteStream(stream, timeoutMs = 3000) {
  *   are test seams allowing full pipeline testing without discord.js or network.
  */
 function createLogger(overrides = {}) {
-    const { sendFn, buildComponentFn, shardId = 0, ...configOverrides } = overrides;
+    const { sendFn, buildComponentFn, ...configOverrides } = overrides;
     const buildComponentImpl = buildComponentFn || buildLogComponent;
     const config = loadConfig(configOverrides);
 
     // Instance-scoped context factory — multiple loggers never share static state.
-    const ctxFactory = createContextFactory({ botVersion: config.botVersion, shardId });
+    const ctxFactory = createContextFactory({ botVersion: config.botVersion });
 
     const stats = new CommandStats({
         windowSize: config.statsWindowSize,
@@ -168,8 +160,8 @@ function createLogger(overrides = {}) {
 
     function consoleWrite(level, message, data) {
         if (!config.console) return;
-        const safeMsg = config.redaction.enabled ? scrubString(String(message)) : String(message);
-        const safeData = data && config.redaction.enabled ? redact(data, config.redaction) : data;
+        const safeMsg = scrubString(String(message));
+        const safeData = data ? redact(data, config.redaction) : data;
         const line = `${colorize(level, `[${level.toUpperCase()}]`)} ${DIM}(logger)${RESET} ${safeMsg}${safeData ? ` ${JSON.stringify(safeData)}` : ''}`;
         (level === 'error' || level === 'fatal' ? console.error : console.log)(line);
     }
@@ -199,9 +191,6 @@ function createLogger(overrides = {}) {
                 ['Component', record.customId],
                 ['Status', record.status ? record.status.toUpperCase() : undefined],
                 ['Duration', fmtDuration(record.durationMs)],
-                ['Guild', record.guildName || record.guildId],
-                ['User', record.userTag || record.userId],
-                ['Handler', record.handler],
                 ['API calls', record.apiCalls],
                 ['Cache', record.cacheStatus],
                 ['Error', record.error?.name],
@@ -211,7 +200,7 @@ function createLogger(overrides = {}) {
             const painted = record.level === 'error' || record.level === 'fatal' ? colorize('error', box) : record.status === 'success' ? colorize('info', box) : box;
             (record.level === 'error' || record.level === 'fatal' ? console.error : console.log)(painted);
         } else {
-            const line = `${colorize(record.level, `[${record.level.toUpperCase()}]`)} ${BOLD}${record.event}${RESET} ${record.message || ''} ${DIM}${compactContext(record)}${RESET}`;
+            const line = `${colorize(record.level, `[${record.level.toUpperCase()}]`)} ${BOLD}${record.event}${RESET} ${record.message || ''}`;
             (record.level === 'error' || record.level === 'fatal' ? console.error : console.log)(line);
         }
     }
@@ -225,12 +214,17 @@ function createLogger(overrides = {}) {
             const enrichedContext = ctxFactory.createContext(context);
             const message = options.message || humanizeMessage(event, enrichedContext, { status: options.status, error: normalizedError });
 
+            const logContext = { ...enrichedContext };
+            // Metrics remain in memory for aggregate timings but are not stored as raw context.
+            delete logContext.metrics;
+            for (const field of OMITTED_CONTEXT_FIELDS) delete logContext[field];
+
             let record = {
                 timestamp: new Date().toISOString(),
                 level,
                 event,
                 message,
-                ...enrichedContext,
+                ...logContext,
                 ...(options.extra || {}),
             };
             if (options.status) record.status = options.status;
@@ -238,13 +232,11 @@ function createLogger(overrides = {}) {
             if (options.category) record.category = options.category;
             if (normalizedError) record.error = normalizedError;
 
-            if (config.redaction.enabled) {
-                record = redact(record, {
-                    extraKeys: config.redaction.extraKeys,
-                    maxStringLength: config.redaction.maxStringLength,
-                    maxStackLength: config.redaction.maxStackLength,
-                });
-            }
+            record = redact(record, {
+                extraKeys: config.redaction.extraKeys,
+                maxStringLength: config.redaction.maxStringLength,
+                maxStackLength: config.redaction.maxStackLength,
+            });
 
             // Durable sink — always happens, this is the audit trail of record.
             writeJsonLine(record);
@@ -318,7 +310,7 @@ function createLogger(overrides = {}) {
     /** Wraps a slash-command handler with full lifecycle telemetry. */
     async function command(name, baseContext = {}, handler) {
         const { interaction, ...rest } = baseContext;
-        const ctx = ctxFactory.createContext({ ...rest, command: name, handler: rest.handler || defaultHandlerName(name), metrics: {} });
+        const ctx = ctxFactory.createContext({ ...rest, command: name, metrics: {} });
         if (interaction) contextByInteraction.set(interaction, ctx);
         try {
             return await runLifecycle({
@@ -337,9 +329,9 @@ function createLogger(overrides = {}) {
     }
 
     /** Same idea as command(), for button/component interactions. */
-    async function button(customId, baseContext = {}, handler) {
+    async function button(_customId, baseContext = {}, handler) {
         const { interaction, ...rest } = baseContext;
-        const ctx = ctxFactory.createContext({ ...rest, customId, metrics: {} });
+        const ctx = ctxFactory.createContext({ ...rest, metrics: {} });
         if (interaction) contextByInteraction.set(interaction, ctx);
         try {
             return await runLifecycle({
@@ -377,10 +369,11 @@ function createLogger(overrides = {}) {
 
     async function reportStartup(extra = {}) {
         const healthResults = await runHealthChecks(healthChecks);
-        const safeHealth = config.redaction.enabled
-            ? healthResults.map((r) => ({ ...r, detail: r.detail ? scrubString(r.detail) : r.detail }))
-            : healthResults;
-        const report = buildStartupReportRaw({ config, shardId, healthResults: safeHealth, ...extra });
+        const safeHealth = healthResults.map((r) => ({
+            ...r,
+            detail: r.detail ? redact({ detail: r.detail }, config.redaction).detail : r.detail,
+        }));
+        const report = buildStartupReportRaw({ config, healthResults: safeHealth, ...extra });
 
         if (config.console) console.log(config.json ? JSON.stringify(report.structured) : report.text);
         writeToFile(JSON.stringify({ timestamp: new Date().toISOString(), event: 'BOT_STARTUP_REPORT', ...report.structured }));
