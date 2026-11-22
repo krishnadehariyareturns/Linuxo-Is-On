@@ -217,6 +217,7 @@ test('button() wraps a component handler with its own lifecycle events', async (
 test('task() failures reach the configured errors webhook', async () => {
     const { logger, sent } = makeLogger({
         webhook: {
+            enabled: true,
             categories: {
                 logs: '',
                 errors: 'https://example.com/errors',
