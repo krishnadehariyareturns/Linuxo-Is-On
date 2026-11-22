@@ -114,10 +114,9 @@ function closeWriteStream(stream, timeoutMs = 3000) {
 }
 
 /**
- * @param {object} overrides - config overrides, deep-merged over the env-var
- *   defaults (see config.js). `overrides.shardId` sets the instance-scoped
- *   static shardId field. `overrides.sendFn` and `overrides.buildComponentFn`
- *   are test seams allowing full pipeline testing without discord.js or network.
+ * @param {object} overrides - config overrides, deep-merged over environment
+ *   defaults (see config.js). `overrides.sendFn` and `overrides.buildComponentFn`
+ *   are test seams allowing pipeline testing without network access.
  */
 function createLogger(overrides = {}) {
     const { sendFn, buildComponentFn, ...configOverrides } = overrides;
