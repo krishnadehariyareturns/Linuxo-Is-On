@@ -45,7 +45,6 @@ async function runHealthChecks(checks) {
 /**
  * @param {object} opts
  * @param {object} opts.config
- * @param {object} opts.client - discord.js Client (post-ready)
  * @param {number} opts.commandsLoaded
  * @param {number} opts.eventsLoaded
  * @param {number} opts.webhooksConfigured

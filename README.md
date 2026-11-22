@@ -59,7 +59,7 @@ A few Discord identifiers are used **temporarily in memory** for the `/startup` 
 **Privacy-first defaults:**
 - Webhook log delivery is **disabled**. To opt in, set `LOG_WEBHOOK_ENABLED=true` and configure the required `LOG_WEBHOOK_*` URLs.
 - Local file logging is disabled unless `LOG_FILE` is set.
-- Redaction is always enabled and cannot be disabled through environment variables or logger overrides. It removes sensitive structured fields and scrubs common credentials, emails, IP addresses, and long numeric identifiers from strings.
+- Redaction is always enabled and cannot be disabled through environment variables or logger overrides. It removes sensitive structured fields and scrubs common credentials, emails, IPv4 addresses, and long numeric identifiers from strings.
 - Memory/event-loop sampling is disabled by default. Enable it with `LOG_INCLUDE_MEMORY=true` only when needed.
 - Periodic performance summaries are disabled by default (`LOG_SUMMARY_INTERVAL_MS=0`).
 

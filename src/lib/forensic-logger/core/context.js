@@ -1,7 +1,5 @@
 'use strict';
 
-const os = require('node:os');
-
 function buildStaticFields({ botVersion } = {}) {
     return Object.freeze({
         botVersion: botVersion || 'unknown',
@@ -11,11 +9,10 @@ function buildStaticFields({ botVersion } = {}) {
 
 /**
  * Create an instance-scoped context builder bound to a specific logger's static
- * metadata. Multiple logger instances (e.g. across shards or tests) remain
- * completely isolated and never overwrite each other's botVersion or shardId.
+ * metadata. Multiple logger instances (e.g. in tests) remain isolated.
  */
-function createContextFactory({ botVersion, shardId = 0 } = {}) {
-    const staticFields = buildStaticFields({ botVersion, shardId });
+function createContextFactory({ botVersion } = {}) {
+    const staticFields = buildStaticFields({ botVersion });
 
     function getStaticFields() {
         return staticFields;
@@ -39,8 +36,7 @@ function createContextFactory({ botVersion, shardId = 0 } = {}) {
     }
 
     /**
-     * Extract standard Discord metadata from a command or button interaction
-     * defensively — guildId is null in DMs, guild may be uncached, etc.
+     * Extract only the command name from a slash-command interaction.
      */
     function fromInteraction(interaction, overrides = {}) {
         if (!interaction) return createContext(overrides);

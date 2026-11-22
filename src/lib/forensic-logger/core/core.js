@@ -5,7 +5,7 @@ const path = require('node:path');
 const { monitorEventLoopDelay } = require('node:perf_hooks');
 
 const { loadConfig, thresholdsFor } = require('./config');
-const { isEnabled, colorize, BOLD, RESET } = require('./levels');
+const { isEnabled, colorize, DIM, BOLD, RESET } = require('./levels');
 const { Events } = require('./eventNames');
 const { createContextFactory } = require('./context');
 const { startTimer, elapsedMs } = require('./timer');
@@ -188,7 +188,6 @@ function createLogger(overrides = {}) {
         if (BOX_EVENTS.has(record.event)) {
             const box = renderBoxReport('COMMAND REPORT', [
                 ['Command', record.command ? `/${record.command}` : undefined],
-                ['Component', record.customId],
                 ['Status', record.status ? record.status.toUpperCase() : undefined],
                 ['Duration', fmtDuration(record.durationMs)],
                 ['API calls', record.apiCalls],
