@@ -313,7 +313,7 @@ test('handleInteractionCreate logs button failures and returns MessageFlags.Ephe
 
     await logger.flushAll({ timeoutMs: 1000 });
     const buttonErrors = records.filter((r) => r.event === 'BUTTON_ERROR');
-    assert.equal(buttonErrors.length, 2);
+    assert.equal(buttonErrors.length, 1, 'identical button failures are deduplicated without user/guild identity');
     assert.ok(records.some((r) => r.event === 'COMMAND_PERMISSION_DENIED'));
     const recordDump = JSON.stringify(records);
     for (const value of ['b1', 'b2', 'guild-1', 'chan-1', 'u1', 'throw_before_ack', 'throw_after_ack']) {

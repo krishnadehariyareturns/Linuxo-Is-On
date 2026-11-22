@@ -17,6 +17,7 @@ const {
 function testConfig(overrides = {}) {
     return loadConfig({
         webhook: {
+            enabled: true, // Transport tests explicitly opt into delivery.
             batchSize: 10,
             flushIntervalMs: 100_000,
             retryLimit: 2,
